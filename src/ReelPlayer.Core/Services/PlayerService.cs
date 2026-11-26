@@ -49,19 +49,21 @@ public sealed class PlayerService : IDisposable
     private readonly Thread _worker;
     private readonly List<string> _baseOptions;
     private readonly List<(LibVLC Lib, MediaPlayer Player, Media? Media)> _retired = new();
+    private volatile LibVLC _libVlc;
+    private volatile MediaPlayer _player;
     private Media? _media;
 
     public PlayerService(IEnumerable<string> libVlcOptions)
     {
         _baseOptions = libVlcOptions.ToList();
-        (LibVLC, Player) = CreateEngine(_baseOptions);
+        (_libVlc, _player) = CreateEngine(_baseOptions);
         _worker = new Thread(WorkLoop) { IsBackground = true, Name = "libVLC worker" };
         _worker.Start();
     }
 
     /// <summary>Current engine. Both are replaced by <see cref="RebuildAsync"/>, so don't cache them.</summary>
-    public LibVLC LibVLC { get; private set; }
-    public MediaPlayer Player { get; private set; }
+    public LibVLC LibVLC => _libVlc;
+    public MediaPlayer Player => _player;
     public LogBuffer Log { get; } = new();
     public MediaItem? CurrentItem { get; private set; }
     public Media? CurrentMedia => _media;
@@ -163,10 +165,10 @@ public sealed class PlayerService : IDisposable
             {
                 Player.Stop();
                 var (lib, mp) = CreateEngine(options);
-                _retired.Add((LibVLC, Player, _media));
+                _retired.Add((_libVlc, _player, _media));
                 _media = null;
-                LibVLC = lib;
-                Player = mp;
+                _libVlc = lib;
+                _player = mp;
                 done.SetResult();
             }
             catch (Exception ex)
@@ -229,8 +231,8 @@ public sealed class PlayerService : IDisposable
     /// <summary>Stops without forgetting the current item (used before restarting it with new options).</summary>
     public void StopKeepItem() => Post(() => Player.Stop());
 
-    public void Pause() => Player.SetPause(true);
-    public void Resume() => Player.SetPause(false);
+    public void Pause() => Post(() => Player.SetPause(true));
+    public void Resume() => Post(() => Player.SetPause(false));
 
     public void AddSubtitle(string path) =>
         Post(() => Player.AddSlave(MediaSlaveType.Subtitle, new Uri(path).AbsoluteUri, true));
@@ -238,7 +240,9 @@ public sealed class PlayerService : IDisposable
     /// <summary>Runs work on the libVLC worker thread (serialized with open/stop).</summary>
     public void Post(Action action)
     {
-        if (!_queue.IsAddingCompleted) _queue.Add(action);
+        if (_queue.IsAddingCompleted) return;
+        try { _queue.Add(action); }
+        catch (InvalidOperationException) { /* shutting down */ }
     }
 
     private void WorkLoop()

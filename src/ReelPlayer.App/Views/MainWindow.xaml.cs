@@ -86,8 +86,9 @@ public partial class MainWindow : Window
         Closing += OnClosing;
 
         OverlayRoot.MouseLeftButtonDown += Overlay_MouseLeftButtonDown;
+        OverlayRoot.MouseDown += Overlay_MouseDown;
         OverlayRoot.MouseMove += Overlay_MouseMove;
-        OverlayRoot.MouseWheel += (_, e) => _vm.ChangeVolume(e.Delta > 0 ? 5 : -5);
+        OverlayRoot.MouseWheel += Overlay_MouseWheel;
         OverlayRoot.Drop += Window_Drop;
         OverlayRoot.DragOver += Window_DragOver;
         OverlayRoot.DragLeave += Window_DragLeave;
@@ -158,6 +159,7 @@ public partial class MainWindow : Window
                 case "NormalSpeed": _vm.SetRate(1f); break;
                 case "JumpToTime": JumpToTime(); break;
                 case "Record": _vm.ToggleRecord(); break;
+                case "AbLoop": _vm.CycleAbLoop(); break;
                 case "CycleLoop":
                     _vm.Loop = _vm.Loop switch { LoopMode.Off => LoopMode.All, LoopMode.All => LoopMode.One, _ => LoopMode.Off };
                     ShowOsd(_vm.LoopTip);
@@ -296,6 +298,7 @@ public partial class MainWindow : Window
                 "MinimalInterface" => _minimal,
                 "ToggleStatusBar" => _vm.Settings.ShowStatusBar,
                 "Record" => _vm.IsRecording,
+                "AbLoop" => _vm.IsAbLoopActive,
                 "Mute" => _vm.IsMuted,
                 _ => null,
             };
@@ -583,8 +586,17 @@ public partial class MainWindow : Window
 
     private void Window_DragOver(object sender, DragEventArgs e)
     {
-        var ok = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText);
+        var hasFiles = e.Data.GetDataPresent(DataFormats.FileDrop);
+        var hasText = e.Data.GetDataPresent(DataFormats.UnicodeText);
+        var ok = hasFiles || hasText;
         e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        if (ok)
+        {
+            var onlySubs = hasFiles && _vm.Engine.IsActive &&
+                           e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0 &&
+                           files.All(MediaFiles.IsSubtitle);
+            DropOverlayText.Text = onlySubs ? "Drop subtitle to attach" : "Drop media to play";
+        }
         DropOverlay.Visibility = ok ? Visibility.Visible : Visibility.Collapsed;
         e.Handled = true;
     }
@@ -777,6 +789,28 @@ public partial class MainWindow : Window
         }
     }
 
+    private void Overlay_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Middle && e.OriginalSource is Grid)
+        {
+            _vm.TogglePlayPause();
+            e.Handled = true;
+        }
+    }
+
+    private void Overlay_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        var up = e.Delta > 0;
+        if (Keyboard.Modifiers == ModifierKeys.Control)
+            _vm.SeekRelative(up ? 5_000 : -5_000);
+        else if (Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            if (up) _vm.Faster(); else _vm.Slower();
+        }
+        else
+            _vm.ChangeVolume(up ? 5 : -5);
+    }
+
     private void Overlay_MouseMove(object sender, MouseEventArgs e)
     {
         var p = e.GetPosition(OverlayRoot);
@@ -936,7 +970,8 @@ public partial class MainWindow : Window
             var play = !fromOtherInstance || !_vm.Settings.EnqueueWhenRunning;
             _vm.OpenLocations(cmd.Locations, play, cmd.StartTimeMs);
         }
-        if (cmd.Fullscreen && !_vm.IsFullscreen) SetFullscreen(true);
+        if ((cmd.Fullscreen || (!fromOtherInstance && _vm.Settings.StartFullscreen)) && !_vm.IsFullscreen)
+            SetFullscreen(true);
         if (fromOtherInstance)
         {
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;

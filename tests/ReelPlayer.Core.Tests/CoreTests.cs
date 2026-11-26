@@ -368,4 +368,27 @@ public class CommandLineAndFilesTests
         var disc = new MediaItem("dvd:///D:/");
         Assert.False(disc.IsFile);
     }
+
+    [Fact]
+    public void FindSiblingMedia_steps_naturally_and_skips_non_media()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var f1 = Path.Combine(dir.FullName, "ep1.mkv");
+            var f2 = Path.Combine(dir.FullName, "ep2.mkv");
+            var f10 = Path.Combine(dir.FullName, "ep10.mkv");
+            var note = Path.Combine(dir.FullName, "ep3.txt");
+            var pl = Path.Combine(dir.FullName, "ep4.m3u8");
+            File.WriteAllText(f1, ""); File.WriteAllText(f2, ""); File.WriteAllText(f10, "");
+            File.WriteAllText(note, ""); File.WriteAllText(pl, "");
+
+            Assert.Equal(f2, MediaFiles.FindSiblingMedia(f1, +1));
+            Assert.Equal(f10, MediaFiles.FindSiblingMedia(f2, +1));
+            Assert.Null(MediaFiles.FindSiblingMedia(f10, +1));
+            Assert.Equal(f2, MediaFiles.FindSiblingMedia(f10, -1));
+            Assert.Null(MediaFiles.FindSiblingMedia(f1, -1));
+        }
+        finally { dir.Delete(true); }
+    }
 }

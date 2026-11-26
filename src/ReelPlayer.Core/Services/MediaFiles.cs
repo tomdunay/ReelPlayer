@@ -55,6 +55,38 @@ public static class MediaFiles
         return files.OrderBy(f => f, NaturalStringComparer.Instance);
     }
 
+    /// <summary>
+    /// Finds the sibling media file at <paramref name="offset"/> (+1 next, -1 previous) in the same folder,
+    /// ordered naturally. Ignores playlists and subdirectories.
+    /// </summary>
+    public static string? FindSiblingMedia(string filePath, int offset)
+    {
+        if (offset == 0) return null;
+        var dir = Path.GetDirectoryName(filePath);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
+        try
+        {
+            var siblings = Directory.EnumerateFiles(dir, "*", new EnumerationOptions
+            {
+                RecurseSubdirectories = false,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
+            })
+            .Where(f => IsMedia(f) && !Playlists.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+            .OrderBy(f => f, NaturalStringComparer.Instance)
+            .ToList();
+
+            var idx = siblings.FindIndex(f => string.Equals(f, filePath, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return null;
+            var target = idx + offset;
+            return target >= 0 && target < siblings.Count ? siblings[target] : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public static string DialogFilter()
     {
         static string Pattern(IEnumerable<string> exts) => string.Join(";", exts.Select(e => "*" + e));

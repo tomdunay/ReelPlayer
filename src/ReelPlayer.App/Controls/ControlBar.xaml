@@ -31,9 +31,13 @@
                 <Popup x:Name="SeekTip" PlacementTarget="{Binding ElementName=SeekSlider}" Placement="Top"
                        AllowsTransparency="True" IsHitTestVisible="False" VerticalOffset="-4">
                     <Border Background="{StaticResource OverlayBrush}" BorderBrush="{StaticResource OverlayBorderBrush}"
-                            BorderThickness="1" CornerRadius="6" Padding="8,3">
-                        <TextBlock x:Name="SeekTipText" Foreground="White" FontSize="12" FontWeight="Medium"
-                                   Typography.NumeralAlignment="Tabular" />
+                            BorderThickness="1" CornerRadius="6" Padding="8,4" MaxWidth="280">
+                        <StackPanel>
+                            <TextBlock x:Name="SeekTipChapter" Foreground="#CCFFFFFF" FontSize="11" TextTrimming="CharacterEllipsis"
+                                       HorizontalAlignment="Center" Visibility="Collapsed" Margin="0,0,0,1" />
+                            <TextBlock x:Name="SeekTipText" Foreground="White" FontSize="12" FontWeight="Medium"
+                                       HorizontalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                        </StackPanel>
                     </Border>
                 </Popup>
             </Grid>
@@ -98,6 +102,24 @@
                     </Button.Foreground>
                     <Button.FontSize>11.5</Button.FontSize>
                     <Button.FontWeight>SemiBold</Button.FontWeight>
+                </Button>
+                <!-- Active A-B loop pill (click to cycle/clear) -->
+                <Button Tag="AbLoop" Content="{Binding AbLoopText}" ToolTip="A-B loop (Shift+L — click to set B or clear)"
+                        Click="Action_Click" Margin="6,0,0,0" Focusable="False" Cursor="Hand"
+                        Visibility="{Binding IsAbLoopActive, Converter={StaticResource BoolToVis}}"
+                        Foreground="{StaticResource ChapterMarkBrush}" FontSize="11.5" FontWeight="SemiBold">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="#28FFD166" BorderBrush="#44FFD166" BorderThickness="1" CornerRadius="10" Padding="8,3">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#40FFD166" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
                 </Button>
                 <!-- Inline resume prompt (replaces the old floating overlay over the video) -->
                 <Border Visibility="{Binding HasResumeOffer, Converter={StaticResource BoolToVis}}"

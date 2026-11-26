@@ -57,7 +57,9 @@ public sealed class ResumeStore
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
-            File.WriteAllText(_filePath, JsonSerializer.Serialize(_entries, AppJsonContext.Default.DictionaryStringEntry));
+            var tmp = _filePath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(_entries, AppJsonContext.Default.DictionaryStringEntry));
+            File.Move(tmp, _filePath, overwrite: true);
         }
         catch { /* non-fatal */ }
     }

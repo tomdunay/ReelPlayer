@@ -52,6 +52,8 @@ public partial class PreferencesWindow : Window
         Enqueue.IsChecked = s.EnqueueWhenRunning;
         Resume.IsChecked = s.ResumePlayback;
         PauseOnMinimize.IsChecked = s.PauseOnMinimize;
+        AutoAdvanceFolder.IsChecked = s.AutoAdvanceFolder;
+        StartFullscreen.IsChecked = s.StartFullscreen;
         HwDecode.IsChecked = s.HardwareDecoding;
         SnapshotFolder.Text = s.SnapshotFolder;
         SnapshotFormat.SelectedIndex = s.SnapshotFormat == "jpg" ? 1 : 0;
@@ -73,12 +75,15 @@ public partial class PreferencesWindow : Window
     {
         var s = _service.Current;
         var before = PlayerService.BuildOptions(s);
+        var beforeOneInstance = s.OneInstance;
 
         s.Theme = Selected(ThemeBox);
         s.OneInstance = OneInstance.IsChecked == true;
         s.EnqueueWhenRunning = Enqueue.IsChecked == true;
         s.ResumePlayback = Resume.IsChecked == true;
         s.PauseOnMinimize = PauseOnMinimize.IsChecked == true;
+        s.AutoAdvanceFolder = AutoAdvanceFolder.IsChecked == true;
+        s.StartFullscreen = StartFullscreen.IsChecked == true;
         s.HardwareDecoding = HwDecode.IsChecked == true;
         s.SnapshotFolder = SnapshotFolder.Text.Trim();
         s.SnapshotFormat = Selected(SnapshotFormat);
@@ -100,7 +105,7 @@ public partial class PreferencesWindow : Window
                 s.Hotkeys[row.Id] = normalized;
         }
 
-        RestartRequired = !before.SequenceEqual(PlayerService.BuildOptions(s));
+        RestartRequired = !before.SequenceEqual(PlayerService.BuildOptions(s)) || s.OneInstance != beforeOneInstance;
         DialogResult = true;
     }
 

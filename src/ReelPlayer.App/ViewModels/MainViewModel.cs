@@ -11,6 +11,7 @@ using ReelPlayer.Core.Services;
 namespace ReelPlayer.App.ViewModels;
 
 public sealed record TrackOption(int Id, string Name, bool IsSelected);
+public sealed record ChapterMark(long StartMs, double Fraction, string Name);
 
 /// <summary>Playback state and operations. UI-only concerns (dialogs, fullscreen, menus) live in MainWindow.</summary>
 public sealed partial class MainViewModel : ObservableObject, IDisposable
@@ -48,6 +49,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private RestartState? _restart;
     private bool _rebuilding;
     private bool _rebuildAgain;
+    private int _playGeneration;
     private string? _pendingFilterOsd;
     private bool _pauseWhenPictureShows;
 
@@ -121,6 +123,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] public partial string ElapsedText { get; set; } = "--:--";
     [ObservableProperty] public partial string TotalText { get; set; } = "--:--";
     [ObservableProperty] public partial IReadOnlyList<double> ChapterFractions { get; set; } = Array.Empty<double>();
+    public IReadOnlyList<ChapterMark> ChapterMarks { get; private set; } = Array.Empty<ChapterMark>();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAbLoopActive), nameof(AbLoopText))]
+    public partial long? AbLoopStartMs { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAbLoopActive), nameof(AbLoopText))]
+    public partial long? AbLoopEndMs { get; set; }
+
+    public bool IsAbLoopActive => AbLoopStartMs.HasValue;
+    public string AbLoopText => AbLoopStartMs is not { } a ? ""
+        : AbLoopEndMs is { } b ? $"A-B {TimeFormat.Format(a)}–{TimeFormat.Format(b)}"
+        : $"A {TimeFormat.Format(a)}…";
+
+    public string? ChapterNameAt(long ms)
+    {
+        if (ChapterMarks.Count == 0) return null;
+        string? name = null;
+        foreach (var ch in ChapterMarks)
+        {
+            if (ch.StartMs <= ms) name = ch.Name;
+            else break;
+        }
+        return name;
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PlayPauseIcon), nameof(PlayPauseTip))]
@@ -275,6 +303,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void PlayItem(MediaItem item, long startMs = 0, bool offerResume = true)
     {
         SaveResumePosition();
+        _playGeneration++;
+        ClearAbLoop(quiet: true);
         Playlist.SetCurrent(item);
         _appliedForCurrentMedia = false;
         _restart = null;
@@ -285,6 +315,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsIdle = false;
         PositionMs = startMs;
         LengthMs = item.DurationMs;
+        ChapterMarks = Array.Empty<ChapterMark>();
         ChapterFractions = Array.Empty<double>();
 
         Engine.Open(item, startMs, BuildExtraOptions());
@@ -341,6 +372,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
         _rebuilding = true;
+        var gen = _playGeneration;
         var item = Engine.IsActive ? Playlist.Current : null;
         var pos = item is null ? 0 : Math.Max(0, Player.Time);
         var restart = CaptureRestart(osd);
@@ -356,7 +388,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             PlayerReplaced?.Invoke();   // the window moves its video surface to the new player
             Engine.ReleaseRetired();
-            if (item is not null)
+            if (item is not null && gen == _playGeneration)
             {
                 _appliedForCurrentMedia = false;
                 _restart = restart;
@@ -420,7 +452,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Stop()
     {
         SaveResumePosition();
+        _playGeneration++;
         DismissResume();
+        ClearAbLoop(quiet: true);
         Engine.StopKeepItem();
         IsRecording = false;
         PositionMs = 0;
@@ -430,14 +464,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void Next()
     {
-        if (Playlist.PeekNext(userInitiated: true) is { } next) PlayItem(next);
-        else ShowOsd("End of playlist");
+        if (Playlist.PeekNext(userInitiated: true) is { } next) { PlayItem(next); return; }
+        if (TryPlaySibling(+1)) return;
+        ShowOsd("End of playlist");
     }
 
     public void Previous()
     {
-        if (Playlist.PeekPrevious() is { } prev) PlayItem(prev);
-        else if (Playlist.Current is { } cur) { if (Engine.IsActive) Seek(0); else PlayItem(cur); }
+        if (Playlist.PeekPrevious() is { } prev) { PlayItem(prev); return; }
+        if (TryPlaySibling(-1)) return;
+        if (Playlist.Current is { } cur) { if (Engine.IsActive) Seek(0); else PlayItem(cur); }
+    }
+
+    private bool TryPlaySibling(int offset)
+    {
+        if (!Settings.AutoAdvanceFolder || Playlist.Current is not { IsFile: true } cur) return false;
+        if (MediaFiles.FindSiblingMedia(cur.Location, offset) is not { } sibling) return false;
+        OpenItems(new[] { new MediaItem(sibling) }, play: true);
+        return true;
+    }
+
+    /// <summary>Cycles A-B loop: Off → set A → set B (looping) → Off.</summary>
+    public void CycleAbLoop()
+    {
+        if (!Engine.IsActive || !Player.IsSeekable) { ShowOsd("Play seekable media to use A-B loop"); return; }
+        var now = Math.Max(0, Player.Time);
+        if (!AbLoopStartMs.HasValue)
+        {
+            AbLoopStartMs = now;
+            AbLoopEndMs = null;
+            ShowOsd($"A-B loop: point A set ({TimeFormat.Format(now)})");
+        }
+        else if (!AbLoopEndMs.HasValue)
+        {
+            if (now <= AbLoopStartMs.Value + 250)
+            {
+                ShowOsd("Point B must be after point A");
+                return;
+            }
+            AbLoopEndMs = now;
+            Seek(AbLoopStartMs.Value);
+            ShowOsd($"A-B loop: {TimeFormat.Format(AbLoopStartMs.Value)} – {TimeFormat.Format(now)}");
+        }
+        else
+        {
+            ClearAbLoop();
+        }
+    }
+
+    public void ClearAbLoop(bool quiet = false)
+    {
+        if (!AbLoopStartMs.HasValue && !AbLoopEndMs.HasValue) return;
+        AbLoopStartMs = null;
+        AbLoopEndMs = null;
+        if (!quiet) ShowOsd("A-B loop: off");
     }
 
     public void Seek(long ms)
@@ -448,6 +528,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Player.Time = ms;
         PositionMs = ms;
         UpdateTimeTexts(ms, len);
+        Smtc.UpdateTimeline(ms, len);
     }
 
     public void SeekRelative(long deltaMs)
@@ -628,8 +709,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var next = TransformIndex switch { 1 => 2, 2 => 3, 3 => 0, _ => 1 };
         var label = "Rotation: " + (next == 0 ? "none" : Transforms[next].Name.Replace("Rotate ", ""));
         SetVideoFilters(next, Sharpen, SharpenSigma, label);
-        // When nothing is playing the setting is kept for the next file; say so on screen either way.
-        ShowOsd(label);
+        // When active, ApplyVideoFilters displays the OSD once the rebuilt engine starts; otherwise show it now.
+        if (!Engine.IsActive) ShowOsd(label);
     }
 
     public void SetAdjust(bool enabled, float brightness, float contrast, float hue, float saturation, float gamma)
@@ -792,7 +873,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         UpdateKeepAwake();
         Smtc.UpdateStatus(IsPlaying, IsPaused);
-        if (state is VLCState.Stopped) Smtc.UpdateStatus(false, false);
     }
 
     /// <summary>Re-applies per-player settings once a new media is actually playing.</summary>
@@ -882,6 +962,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             PlayItem(next);
         }
+        else if (Playlist.Items.Count == 1 && Playlist.Loop == LoopMode.Off && TryPlaySibling(+1))
+        {
+            return;
+        }
         else
         {
             Engine.StopKeepItem();
@@ -915,6 +999,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (len > 0)
         {
             var chapters = Player.FullChapterDescriptions(-1);
+            ChapterMarks = chapters.Length > 0
+                ? chapters.Select((c, i) => new ChapterMark(
+                    Math.Max(0, c.TimeOffset),
+                    Math.Clamp((double)c.TimeOffset / len, 0, 1),
+                    string.IsNullOrWhiteSpace(c.Name) ? $"Chapter {i + 1}" : c.Name)).ToList()
+                : Array.Empty<ChapterMark>();
             ChapterFractions = chapters.Length > 1
                 ? chapters.Skip(1).Select(c => (double)c.TimeOffset / len).Where(f => f > 0 && f < 1).ToList()
                 : Array.Empty<double>();
@@ -923,15 +1013,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void Tick()
     {
-        if (!Engine.IsActive) return;
+        if (_rebuilding || !Engine.IsActive) return;
         var len = Player.Length;
         var time = Player.Time;
         if (len > 0 && len != LengthMs) LengthMs = len;
         IsSeekable = Player.IsSeekable;
-        if (!IsUserSeeking && time >= 0) PositionMs = time;
+        if (!IsUserSeeking && time >= 0)
+        {
+            PositionMs = time;
+            if (AbLoopStartMs is { } start && AbLoopEndMs is { } end && time >= end)
+            {
+                Seek(start);
+                return;
+            }
+        }
         UpdateTimeTexts(IsUserSeeking ? PositionMs : time, len);
 
-        if (++_timelineTick % 4 == 0) Smtc.UpdateTimeline(time, len);
+        if (IsPlaying && ++_timelineTick % 4 == 0) Smtc.UpdateTimeline(time, len);
     }
 
     public void UpdateTimeTexts(long time, long len)

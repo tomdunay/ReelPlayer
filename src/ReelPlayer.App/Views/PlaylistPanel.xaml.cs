@@ -156,14 +156,32 @@ public partial class PlaylistPanel : UserControl
         {
             var target = ItemFromPoint(e.GetPosition(List));
             var targetIndex = target is null ? _playlist.Items.Count - 1 : _playlist.Items.IndexOf(target);
-            foreach (var item in moving)
+            if (targetIndex < 0) return;
+
+            // Preserve original relative order regardless of drag direction.
+            var ordered = moving
+                .Select(i => (Item: i, Index: _playlist.Items.IndexOf(i)))
+                .Where(x => x.Index >= 0)
+                .OrderBy(x => x.Index)
+                .Select(x => x.Item)
+                .ToList();
+
+            var insertAt = targetIndex;
+            foreach (var item in ordered)
             {
                 var from = _playlist.Items.IndexOf(item);
-                if (from < 0 || targetIndex < 0) continue;
-                _playlist.Move(from, Math.Min(targetIndex, _playlist.Items.Count - 1));
+                if (from < 0) continue;
+                var dest = Math.Clamp(insertAt, 0, _playlist.Items.Count - 1);
+                if (from < dest)
+                    _playlist.Move(from, dest);
+                else
+                {
+                    _playlist.Move(from, dest);
+                    insertAt++;
+                }
             }
             List.SelectedItems.Clear();
-            foreach (var item in moving) List.SelectedItems.Add(item);
+            foreach (var item in ordered) List.SelectedItems.Add(item);
         }
         else if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
         {

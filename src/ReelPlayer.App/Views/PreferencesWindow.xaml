@@ -51,6 +51,8 @@
                                   IsEnabled="{Binding IsChecked, ElementName=OneInstance}" />
                         <CheckBox x:Name="Resume" Content="Continue playback where I left off (files longer than 5 minutes)" Margin="0,6,0,0" />
                         <CheckBox x:Name="PauseOnMinimize" Content="Pause playback when minimized" Margin="0,6,0,0" />
+                        <CheckBox x:Name="AutoAdvanceFolder" Content="Step to next/previous media file in the same folder" Margin="0,6,0,0" />
+                        <CheckBox x:Name="StartFullscreen" Content="Start in fullscreen" Margin="0,6,0,0" />
 
                         <TextBlock Text="File associations" Style="{StaticResource Section}" />
                         <StackPanel Orientation="Horizontal">

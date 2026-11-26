@@ -41,6 +41,7 @@ public static class HotkeyActions
         new("RotateVideo", "Rotate video 90° clockwise", new[] { "Ctrl+R" }),
         new("ShowTime", "Show time", new[] { "T" }),
         new("CycleLoop", "Cycle loop mode", new[] { "L" }),
+        new("AbLoop", "A-B loop", new[] { "Shift+L" }),
         new("TogglePlaylist", "Toggle playlist", new[] { "Ctrl+L" }),
         new("OpenFile", "Open file", new[] { "Ctrl+O" }),
         new("OpenMultiple", "Open multiple files", new[] { "Ctrl+Shift+O" }),

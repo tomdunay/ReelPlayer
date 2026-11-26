@@ -14,6 +14,8 @@ public sealed class AppSettings
     public bool AlwaysOnTop { get; set; }
     public bool ShowRemainingTime { get; set; }
     public bool PauseOnMinimize { get; set; }
+    public bool AutoAdvanceFolder { get; set; } = true;
+    public bool StartFullscreen { get; set; }
 
     // Engine (applied at startup)
     public bool HardwareDecoding { get; set; } = true;
