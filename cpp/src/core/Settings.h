@@ -20,6 +20,8 @@ struct AppSettings {
     bool pauseOnMinimize = false;
     bool autoAdvanceFolder = true;
     bool startFullscreen = false;
+    bool autoFitWindow = true;
+    bool clickToPause = true;
 
     // Engine (applied at startup)
     bool hardwareDecoding = true;

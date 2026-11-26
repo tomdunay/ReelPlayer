@@ -827,13 +827,93 @@ static bool showHotkeyEditor(HWND owner, std::map<std::string, std::string>& ove
     return dlg.runModal();
 }
 
+bool Dialogs::showSubtitleAppearance(HWND owner, AppSettings& s) {
+    ModalDialog dlg;
+    if (!dlg.create(owner, L"Subtitle Appearance & Defaults", 450, 310)) return false;
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+
+    static constexpr const wchar_t* kSizes[] = { L"Smaller", L"Small", L"Normal", L"Large", L"Larger" };
+    static constexpr const wchar_t* kOutlines[] = { L"None", L"Thin", L"Normal", L"Thick" };
+    static constexpr struct { const wchar_t* label; const wchar_t* hex; } kColors[] = {
+        { L"White",      L"#FFFFFF" },
+        { L"Yellow",     L"#FFD166" },
+        { L"Cyan",       L"#67E8F9" },
+        { L"Light Green",L"#86EFAC" },
+        { L"Light Gray", L"#D4D4D8" },
+    };
+
+    CreateWindowW(L"STATIC", L"Font size:", WS_CHILD | WS_VISIBLE, 16, 18, 130, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND sizeBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 152, 14, 150, 160, dlg.hwnd, reinterpret_cast<HMENU>(101), hi, nullptr);
+    int sizeIdx = 2;
+    for (int i = 0; i < 5; ++i) {
+        SendMessageW(sizeBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kSizes[i]));
+        if (s.subtitleSize == kSizes[i]) sizeIdx = i;
+    }
+    SendMessageW(sizeBox, CB_SETCURSEL, sizeIdx, 0);
+
+    CreateWindowW(L"STATIC", L"Text color:", WS_CHILD | WS_VISIBLE, 16, 54, 130, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND colorBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 152, 50, 150, 160, dlg.hwnd, reinterpret_cast<HMENU>(102), hi, nullptr);
+    int colorIdx = 0;
+    for (int i = 0; i < 5; ++i) {
+        SendMessageW(colorBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kColors[i].label));
+        if (_wcsicmp(s.subtitleColor.c_str(), kColors[i].hex) == 0) colorIdx = i;
+    }
+    SendMessageW(colorBox, CB_SETCURSEL, colorIdx, 0);
+
+    CreateWindowW(L"STATIC", L"Outline thickness:", WS_CHILD | WS_VISIBLE, 16, 90, 130, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND outBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 152, 86, 150, 160, dlg.hwnd, reinterpret_cast<HMENU>(103), hi, nullptr);
+    int outIdx = 2;
+    for (int i = 0; i < 4; ++i) {
+        SendMessageW(outBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kOutlines[i]));
+        if (s.subtitleOutline == kOutlines[i]) outIdx = i;
+    }
+    SendMessageW(outBox, CB_SETCURSEL, outIdx, 0);
+
+    CreateWindowW(L"STATIC", L"Preferred language:", WS_CHILD | WS_VISIBLE, 16, 128, 130, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND langEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", s.subtitleLanguage.c_str(),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 152, 124, 260, 26, dlg.hwnd, reinterpret_cast<HMENU>(104), hi, nullptr);
+
+    CreateWindowW(L"STATIC", L"Text encoding:", WS_CHILD | WS_VISIBLE, 16, 164, 130, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND encEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", s.subtitleEncoding.c_str(),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 152, 160, 260, 26, dlg.hwnd, reinterpret_cast<HMENU>(105), hi, nullptr);
+
+    CreateWindowW(L"STATIC", L"Tip: Leave language/encoding blank for auto-detect (e.g. en,fr / UTF-8).",
+                  WS_CHILD | WS_VISIBLE, 16, 196, 405, 20, dlg.hwnd, nullptr, hi, nullptr);
+
+    CreateWindowW(L"BUTTON", L"Apply", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 240, 232, 84, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 332, 232, 84, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
+
+    dlg.handler = [&](HWND h, UINT m, WPARAM w, LPARAM) -> LRESULT {
+        if (m == WM_COMMAND && LOWORD(w) == IDOK) {
+            int si = std::clamp<int>(static_cast<int>(SendMessageW(sizeBox, CB_GETCURSEL, 0, 0)), 0, 4);
+            int ci = std::clamp<int>(static_cast<int>(SendMessageW(colorBox, CB_GETCURSEL, 0, 0)), 0, 4);
+            int oi = std::clamp<int>(static_cast<int>(SendMessageW(outBox, CB_GETCURSEL, 0, 0)), 0, 3);
+            wchar_t lb[128] = {}, eb[128] = {};
+            GetWindowTextW(langEdit, lb, 128);
+            GetWindowTextW(encEdit, eb, 128);
+            s.subtitleSize = kSizes[si];
+            s.subtitleColor = kColors[ci].hex;
+            s.subtitleOutline = kOutlines[oi];
+            s.subtitleLanguage = trim(lb);
+            s.subtitleEncoding = trim(eb);
+            dlg.accepted = true;
+            DestroyWindow(h);
+            return 0;
+        }
+        if (m == WM_COMMAND && LOWORD(w) == IDCANCEL) { DestroyWindow(h); return 0; }
+        return -1;
+    };
+    return dlg.runModal();
+}
+
 bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRestartRequired) {
     outRestartRequired = false;
     ModalDialog dlg;
-    if (!dlg.create(owner, L"Preferences", 510, 485)) return false;
+    if (!dlg.create(owner, L"Preferences", 520, 540)) return false;
     HINSTANCE hi = GetModuleHandleW(nullptr);
     auto& s = settings.current();
     auto pendingHotkeys = s.hotkeys;
+    AppSettings pendingSub = s;
 
     CreateWindowW(L"STATIC", L"Theme:", WS_CHILD | WS_VISIBLE, 16, 18, 90, 20, dlg.hwnd, nullptr, hi, nullptr);
     HWND themeBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 110, 14, 140, 120, dlg.hwnd, reinterpret_cast<HMENU>(101), hi, nullptr);
@@ -843,7 +923,7 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
     SendMessageW(themeBox, CB_SETCURSEL, s.theme == L"Light" ? 1 : (s.theme == L"System" ? 2 : 0), 0);
 
     auto mkChk = [&](int y, const wchar_t* text, int id, bool val) {
-        HWND c = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 16, y, 460, 22, dlg.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hi, nullptr);
+        HWND c = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 16, y, 470, 22, dlg.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hi, nullptr);
         SendMessageW(c, BM_SETCHECK, val ? BST_CHECKED : BST_UNCHECKED, 0);
         return c;
     };
@@ -852,11 +932,13 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
     HWND cMin  = mkChk(100, L"Pause playback when minimized", 204, s.pauseOnMinimize);
     HWND cAdv  = mkChk(126, L"Step to next/previous media file in the same folder", 205, s.autoAdvanceFolder);
     HWND cFs   = mkChk(152, L"Start in fullscreen", 206, s.startFullscreen);
-    HWND cSub  = mkChk(178, L"Automatically load subtitle files next to the video", 208, s.autoLoadSubtitles);
-    HWND cFast = mkChk(204, L"Fast keyframe seeking while scrubbing (restart required)", 210, s.fastSeek);
+    HWND cFit  = mkChk(178, L"Auto-fit window size to video aspect ratio", 212, s.autoFitWindow);
+    HWND cClk  = mkChk(204, L"Single-click video to Play / Pause", 213, s.clickToPause);
+    HWND cSub  = mkChk(230, L"Automatically load subtitle files next to the video", 208, s.autoLoadSubtitles);
+    HWND cFast = mkChk(256, L"Fast keyframe seeking while scrubbing (restart required)", 210, s.fastSeek);
 
-    CreateWindowW(L"STATIC", L"Hardware decode:", WS_CHILD | WS_VISIBLE, 16, 240, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
-    HWND hwBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 236, 130, 140, dlg.hwnd, reinterpret_cast<HMENU>(207), hi, nullptr);
+    CreateWindowW(L"STATIC", L"Hardware decode:", WS_CHILD | WS_VISIBLE, 16, 292, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND hwBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 288, 130, 140, dlg.hwnd, reinterpret_cast<HMENU>(207), hi, nullptr);
     SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Auto"));
     SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"D3D11"));
     SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"DXVA2"));
@@ -864,29 +946,34 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
     int hwIdx = (s.hwDecodeMode == L"D3D11") ? 1 : (s.hwDecodeMode == L"DXVA2" ? 2 : ((!s.hardwareDecoding || s.hwDecodeMode == L"Off") ? 3 : 0));
     SendMessageW(hwBox, CB_SETCURSEL, hwIdx, 0);
 
-    CreateWindowW(L"STATIC", L"Caching profile:", WS_CHILD | WS_VISIBLE, 16, 274, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
-    HWND cacheBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 270, 260, 140, dlg.hwnd, reinterpret_cast<HMENU>(211), hi, nullptr);
+    CreateWindowW(L"STATIC", L"Caching profile:", WS_CHILD | WS_VISIBLE, 16, 326, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND cacheBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 322, 260, 140, dlg.hwnd, reinterpret_cast<HMENU>(211), hi, nullptr);
     SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Low latency (150 / 500 ms)"));
     SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Balanced (300 / 1000 ms)"));
     SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"High buffer (600 / 2500 ms)"));
     int cacheIdx = (s.fileCachingMs <= 200) ? 0 : (s.fileCachingMs >= 500 ? 2 : 1);
     SendMessageW(cacheBox, CB_SETCURSEL, cacheIdx, 0);
 
-    CreateWindowW(L"STATIC", L"Snapshot format:", WS_CHILD | WS_VISIBLE, 16, 310, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
-    HWND fmtBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 306, 90, 90, dlg.hwnd, reinterpret_cast<HMENU>(209), hi, nullptr);
+    CreateWindowW(L"STATIC", L"Snapshot format:", WS_CHILD | WS_VISIBLE, 16, 362, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND fmtBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 358, 90, 90, dlg.hwnd, reinterpret_cast<HMENU>(209), hi, nullptr);
     SendMessageW(fmtBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"png"));
     SendMessageW(fmtBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"jpg"));
     SendMessageW(fmtBox, CB_SETCURSEL, s.snapshotFormat == L"jpg" ? 1 : 0, 0);
 
-    CreateWindowW(L"BUTTON", L"Configure Hotkeys...", WS_CHILD | WS_VISIBLE, 248, 304, 156, 28, dlg.hwnd, reinterpret_cast<HMENU>(303), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Subtitle Appearance...", WS_CHILD | WS_VISIBLE, 248, 356, 156, 28, dlg.hwnd, reinterpret_cast<HMENU>(304), hi, nullptr);
 
-    CreateWindowW(L"BUTTON", L"Register File Associations...", WS_CHILD | WS_VISIBLE, 16, 350, 196, 28, dlg.hwnd, reinterpret_cast<HMENU>(301), hi, nullptr);
-    CreateWindowW(L"BUTTON", L"Remove Registration", WS_CHILD | WS_VISIBLE, 222, 350, 156, 28, dlg.hwnd, reinterpret_cast<HMENU>(302), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Configure Hotkeys...", WS_CHILD | WS_VISIBLE, 16, 400, 150, 28, dlg.hwnd, reinterpret_cast<HMENU>(303), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Register File Types...", WS_CHILD | WS_VISIBLE, 174, 400, 160, 28, dlg.hwnd, reinterpret_cast<HMENU>(301), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Remove Registration", WS_CHILD | WS_VISIBLE, 342, 400, 150, 28, dlg.hwnd, reinterpret_cast<HMENU>(302), hi, nullptr);
 
-    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 304, 404, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
-    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 398, 404, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 314, 456, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 408, 456, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
 
     dlg.handler = [&](HWND h, UINT m, WPARAM w, LPARAM) -> LRESULT {
+        if (m == WM_COMMAND && LOWORD(w) == 304) {
+            showSubtitleAppearance(h, pendingSub);
+            return 0;
+        }
         if (m == WM_COMMAND && LOWORD(w) == 303) {
             showHotkeyEditor(h, pendingHotkeys);
             return 0;
@@ -911,8 +998,16 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
             s.pauseOnMinimize = SendMessageW(cMin, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.autoAdvanceFolder = SendMessageW(cAdv, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.startFullscreen = SendMessageW(cFs, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            s.autoFitWindow = SendMessageW(cFit, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            s.clickToPause = SendMessageW(cClk, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.autoLoadSubtitles = SendMessageW(cSub, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.fastSeek = SendMessageW(cFast, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+            s.subtitleSize = pendingSub.subtitleSize;
+            s.subtitleColor = pendingSub.subtitleColor;
+            s.subtitleOutline = pendingSub.subtitleOutline;
+            s.subtitleLanguage = pendingSub.subtitleLanguage;
+            s.subtitleEncoding = pendingSub.subtitleEncoding;
 
             int hwi = static_cast<int>(SendMessageW(hwBox, CB_GETCURSEL, 0, 0));
             s.hwDecodeMode = (hwi == 1) ? L"D3D11" : (hwi == 2 ? L"DXVA2" : (hwi == 3 ? L"Off" : L"Auto"));
@@ -934,6 +1029,114 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
         return -1;
     };
     return dlg.runModal();
+}
+
+void Dialogs::showUserGuide(HWND owner) {
+    ModalDialog dlg;
+    if (!dlg.create(owner, L"How to Use Reel Player & All Its Features", 680, 540)) return;
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+
+    static constexpr const wchar_t* kGuide =
+        L"REEL PLAYER — USER GUIDE & FEATURE OVERVIEW\r\n"
+        L"================================================================\r\n\r\n"
+        L"1. OPENING MEDIA\r\n"
+        L"  • Open File (Ctrl+O) / Multiple Files (Ctrl+Shift+O) / Folder (Ctrl+F):\r\n"
+        L"    Plays virtually any video or audio format (MP4, MKV, WebM, AVI, MOV,\r\n"
+        L"    FLAC, MP3, Opus, etc.) powered by libVLC.\r\n"
+        L"  • Drag & Drop: Drop any media file or subtitle file directly onto the window.\r\n"
+        L"  • Folder Stepping: Next (N) and Previous (P) automatically step through\r\n"
+        L"    sibling media files in the same folder.\r\n"
+        L"  • Network Stream (Ctrl+N): Paste an http(s)://, rtsp://, rtmp://, or\r\n"
+        L"    smb:// URL (auto-fills from your clipboard if it contains a URL).\r\n"
+        L"  • Open Disc (Ctrl+D) & Capture Device (Ctrl+C): Play DVD/Blu-ray/CD\r\n"
+        L"    folders or ISOs, DirectShow capture devices, or your desktop screen.\r\n\r\n"
+        L"2. PLAYBACK, SEEKING & THUMBNAIL PREVIEWS\r\n"
+        L"  • Play / Pause: Space, single-click the video (configurable in Preferences),\r\n"
+        L"    or click the center play button.\r\n"
+        L"  • Seek Bar Previews: Hover anywhere on the seek bar to see the exact\r\n"
+        L"    timestamp, chapter name (for MKV/MP4 chapters), and an aspect-ratio-\r\n"
+        L"    accurate video frame thumbnail (pre-warmed in the background when\r\n"
+        L"    ffmpeg is installed).\r\n"
+        L"  • Fast Scrubbing: Dragging the seek bar uses fast keyframe seeking for\r\n"
+        L"    instant scrubbing on 4K/HEVC files, then lands accurately on release.\r\n"
+        L"  • Keyboard Seeking: Shift+Left/Right (±3s), Alt+Left/Right (±10s),\r\n"
+        L"    Ctrl+Left/Right (±1 min), Ctrl+Alt+Left/Right (±5 min), Ctrl+T to\r\n"
+        L"    jump to an exact timestamp.\r\n"
+        L"  • Frame Stepping: Press E for next frame, Shift+E for previous frame.\r\n"
+        L"  • Playback Speed: Press ] / [ to speed up or slow down, = to reset 1.0x.\r\n"
+        L"  • Click Total Time: Toggles between total duration and remaining time.\r\n"
+        L"  • Resume Playback: For files longer than 5 minutes, Reel Player remembers\r\n"
+        L"    where you left off and shows a one-click Continue pill.\r\n\r\n"
+        L"3. A-B LOOP & LOSSLESS CLIP EXPORT\r\n"
+        L"  • Press Shift+L once to mark Point A, again to mark Point B (loops\r\n"
+        L"    continuously between A and B), and a third time to clear.\r\n"
+        L"  • Export A-B Clip (Ctrl+Shift+E or click the Export pill): Losslessly\r\n"
+        L"    trims the A-B segment next to the original video using ffmpeg (-c copy)\r\n"
+        L"    with zero re-encoding quality loss.\r\n\r\n"
+        L"4. FULLSCREEN, PICTURE-IN-PICTURE & WINDOW MODES\r\n"
+        L"  • Fullscreen (F or double-click video): Smoothly fades the floating\r\n"
+        L"    control bar in on mouse movement and keeps it visible while hovering\r\n"
+        L"    or scrubbing. Press Esc or F to exit.\r\n"
+        L"  • Picture-in-Picture / Mini Player (Shift+P, Ctrl+Shift+P, or PiP button):\r\n"
+        L"    Opens a compact, borderless, always-on-top corner player. Drag the\r\n"
+        L"    video anywhere on screen, hover for controls, and press Esc or\r\n"
+        L"    double-click to return to normal view.\r\n"
+        L"  • Fit Window to Video (Ctrl+1): Sizes the window to match the video's native\r\n"
+        L"    aspect ratio without black bars (also automatic on open in Preferences).\r\n"
+        L"  • Minimal Interface (Ctrl+H): Hides the top menu bar and bottom bar.\r\n"
+        L"  • Always on Top (View menu): Keeps the player above other windows.\r\n\r\n"
+        L"5. TRACKS, SUBTITLES & RIGHT-CLICK MENU\r\n"
+        L"  • Right-click anywhere on the video for quick access to Video Tracks,\r\n"
+        L"    Audio Tracks, Subtitle Tracks, Playback controls, PiP, and Media Info.\r\n"
+        L"  • Quick Cycling: Press B to cycle audio tracks, V to cycle subtitles.\r\n"
+        L"  • Sidecar Subtitles: Matching .srt/.ass/.vtt files next to the video\r\n"
+        L"    load automatically; drop a subtitle file or use Subtitle > Add Subtitle\r\n"
+        L"    File to load another.\r\n"
+        L"  • Subtitle Appearance & Live Size: Press Alt+Up / Alt+Down to resize\r\n"
+        L"    subtitles on the fly, or open Subtitle > Subtitle Appearance... to\r\n"
+        L"    customize font size, color, outline thickness, language, and encoding.\r\n"
+        L"  • Track Synchronization (Tools > Track Synchronization): Adjust audio\r\n"
+        L"    delay (J / K) or subtitle delay (G / H) in milliseconds.\r\n\r\n"
+        L"6. AUDIO/VIDEO EFFECTS, SNAPSHOTS & RECORDING\r\n"
+        L"  • Effects & Filters (Ctrl+E): 10-band Audio Equalizer with presets,\r\n"
+        L"    Image Adjust (Brightness, Contrast, Hue, Saturation, Gamma), plus\r\n"
+        L"    Rotate/Flip transforms and Sharpen filter.\r\n"
+        L"  • Video Geometry: Cycle Aspect Ratio (A), Crop (C), Zoom (Z), Rotate\r\n"
+        L"    90 degrees (R), and Deinterlace modes from the Video menu.\r\n"
+        L"  • Snapshot (Shift+S): Saves a PNG or JPG frame to Pictures\\ReelPlayer.\r\n"
+        L"  • Record (Shift+R): Records the live stream or segment to disk.\r\n\r\n"
+        L"7. PREFERENCES, CUSTOM HOTKEYS & PERFORMANCE TUNING\r\n"
+        L"  • Open Preferences (Ctrl+P) to configure:\r\n"
+        L"      - Theme (Dark / Light / System)\r\n"
+        L"      - Hardware Decoding (Auto, D3D11, DXVA2, or Off)\r\n"
+        L"      - Caching Profile (Low latency, Balanced, or High buffer for NAS)\r\n"
+        L"      - Fast Keyframe Seeking & Snapshot Format (PNG / JPG)\r\n"
+        L"      - File Associations (register Reel Player in Windows 'Open with')\r\n"
+        L"  • Configure Hotkeys: Click 'Configure Hotkeys...' in Preferences to\r\n"
+        L"    rebind any action, clear it with Backspace, or reset to defaults.\r\n"
+        L"  • Hover Tooltips: Hover any button on the control bar to see its name\r\n"
+        L"    and current keyboard shortcut.\r\n\r\n"
+        L"8. PORTABLE MODE, TASKBAR & DIAGNOSTICS\r\n"
+        L"  • Portable Mode: Create an empty file named 'portable.txt' next to\r\n"
+        L"    ReelPlayer.exe to store settings, resume history, and logs inside a\r\n"
+        L"    local 'data\\' folder instead of AppData.\r\n"
+        L"  • Windows Taskbar: Shows live playback progress on the taskbar icon\r\n"
+        L"    and Previous / Play-Pause / Next buttons on taskbar hover, plus full\r\n"
+        L"    Windows hardware media key support.\r\n"
+        L"  • Media & Codec Information (Ctrl+I) and Messages (Ctrl+M) under Tools\r\n"
+        L"    let you inspect stream codecs, dropped frames, and libVLC logs.\r\n";
+
+    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", kGuide,
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL,
+        14, 14, 636, 434, dlg.hwnd, nullptr, hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        566, 460, 84, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+
+    dlg.handler = [&](HWND h, UINT m, WPARAM w, LPARAM) -> LRESULT {
+        if (m == WM_COMMAND && (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL)) { DestroyWindow(h); return 0; }
+        return -1;
+    };
+    dlg.runModal();
 }
 
 void Dialogs::showShortcuts(HWND owner, const HotkeyMap& hotkeys) {

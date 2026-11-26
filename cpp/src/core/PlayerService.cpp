@@ -640,6 +640,30 @@ double PlayerService::videoFps() const {
     return (fps >= 1.0 && fps <= 240.0) ? fps : 0.0;
 }
 
+bool PlayerService::videoSize(unsigned& outW, unsigned& outH) const {
+    outW = 0;
+    outH = 0;
+    if (auto* mp = _mp.load()) {
+        if (libvlc_video_get_size(mp, 0, &outW, &outH) == 0 && outW > 0 && outH > 0) return true;
+    }
+    auto* m = _media.load();
+    if (!m) return false;
+    libvlc_media_track_t** tracks = nullptr;
+    unsigned count = libvlc_media_tracks_get(m, &tracks);
+    bool ok = false;
+    for (unsigned i = 0; i < count; ++i) {
+        if (tracks[i]->i_type == libvlc_track_video && tracks[i]->video &&
+            tracks[i]->video->i_width > 0 && tracks[i]->video->i_height > 0) {
+            outW = tracks[i]->video->i_width;
+            outH = tracks[i]->video->i_height;
+            ok = true;
+            break;
+        }
+    }
+    if (tracks) libvlc_media_tracks_release(tracks, count);
+    return ok;
+}
+
 MediaStatsInfo PlayerService::mediaStats() const {
     MediaStatsInfo out{};
     auto* m = _media.load();

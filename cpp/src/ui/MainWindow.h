@@ -93,6 +93,9 @@ private:
     void setDeinterlace(int idx);
     void cycleAudioTrack();
     void cycleSubtitleTrack();
+    void stepSubtitleSize(int delta);
+    void openSubtitleAppearance();
+    void fitWindowToVideo(bool showFeedback = false);
 
     // UI state
     void setFullscreen(bool on);
@@ -165,6 +168,7 @@ private:
     float _fsBarTargetAlpha = 0.0f;
     bool _cursorHidden = false;
     bool _appliedForCurrentMedia = false;
+    bool _fittedForCurrentMedia = false;
     bool _rebuilding = false;
     int _playGeneration = 0;
     int _consecutiveErrors = 0;

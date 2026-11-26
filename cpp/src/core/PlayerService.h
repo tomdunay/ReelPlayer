@@ -168,8 +168,10 @@ public:
     std::vector<MediaTrackInfo> mediaTracks() const;
     MediaStatsInfo mediaStats() const;
     double videoFps() const;
+    bool videoSize(unsigned& outW, unsigned& outH) const;
 
-    // Engine rebuild for transform/sharpen video filters
+    // Engine rebuild for transform/sharpen video filters or live option updates
+    void setBaseOptions(const std::vector<std::string>& opts) { _baseOptions = opts; }
     std::future<bool> rebuildAsync(const std::vector<std::string>& extraOptions);
     void releaseRetired();
 

@@ -92,6 +92,8 @@ AppSettings& SettingsService::load() {
         getBool("PauseOnMinimize", s.pauseOnMinimize);
         getBool("AutoAdvanceFolder", s.autoAdvanceFolder);
         getBool("StartFullscreen", s.startFullscreen);
+        getBool("AutoFitWindow", s.autoFitWindow);
+        getBool("ClickToPause", s.clickToPause);
 
         getBool("HardwareDecoding", s.hardwareDecoding);
         getWstr("HwDecodeMode", s.hwDecodeMode);
@@ -161,6 +163,8 @@ bool SettingsService::save() const {
         j["PauseOnMinimize"] = s.pauseOnMinimize;
         j["AutoAdvanceFolder"] = s.autoAdvanceFolder;
         j["StartFullscreen"] = s.startFullscreen;
+        j["AutoFitWindow"] = s.autoFitWindow;
+        j["ClickToPause"] = s.clickToPause;
         j["HardwareDecoding"] = s.hardwareDecoding;
         j["HwDecodeMode"] = toUtf8(s.hwDecodeMode);
         j["FileCachingMs"] = s.fileCachingMs;

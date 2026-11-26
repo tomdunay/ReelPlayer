@@ -417,14 +417,45 @@ std::wstring D2DControlBar::chapterAt(int64_t ms) const {
 
 void D2DControlBar::computeLayout(float w, float h) {
     _buttons.clear();
+    _compactLayout = _state.isMiniPlayer || (w < 560.0f);
+
+    if (_compactLayout) {
+        const float padX = 10.0f;
+        const float timeW = 46.0f;
+        _seekRect = D2D1::RectF(padX + timeW + 4.0f, 4.0f, w - padX - timeW - 4.0f, 24.0f);
+        _totalTimeRect = D2D1::RectF(w - padX - timeW, 4.0f, w - padX, 24.0f);
+        _volRect = D2D1::RectF(-1, -1, -1, -1);
+
+        const float rowCy = std::max(40.0f, h - 21.0f);
+        const float btnW = 30.0f;
+        const float btnH = 28.0f;
+        const float cx = w * 0.5f;
+
+        // Center: Prev | Play/Pause (34x34) | Next
+        _buttons.push_back({ D2D1::RectF(cx - 17.0f, rowCy - 17.0f, cx + 17.0f, rowCy + 17.0f), "PlayPause", L"Play / Pause" });
+        _buttons.push_back({ D2D1::RectF(cx - 17.0f - 36.0f, rowCy - btnH * 0.5f, cx - 17.0f - 6.0f, rowCy + btnH * 0.5f), "Previous", L"Previous" });
+        _buttons.push_back({ D2D1::RectF(cx + 17.0f + 6.0f, rowCy - btnH * 0.5f, cx + 17.0f + 36.0f, rowCy + btnH * 0.5f), "Next", L"Next" });
+
+        // Left: Mute
+        _buttons.push_back({ D2D1::RectF(padX, rowCy - btnH * 0.5f, padX + btnW, rowCy + btnH * 0.5f), "Mute", L"Mute" });
+
+        // Right: Fullscreen | Exit PiP
+        float rx = w - padX;
+        rx -= btnW;
+        _buttons.push_back({ D2D1::RectF(rx, rowCy - btnH * 0.5f, rx + btnW, rowCy + btnH * 0.5f), "Fullscreen", L"Fullscreen" });
+        rx -= btnW + 4.0f;
+        _buttons.push_back({ D2D1::RectF(rx, rowCy - btnH * 0.5f, rx + btnW, rowCy + btnH * 0.5f), "MiniPlayer", L"Exit Picture-in-Picture" });
+        return;
+    }
+
     const float padX = 14.0f;
     const float timeW = 54.0f;
-    // Row 1: Seek bar (y: 8..28)
+    // Row 1: Seek bar (y: 6..28)
     _seekRect = D2D1::RectF(padX + timeW + 6.0f, 6.0f, w - padX - timeW - 6.0f, 28.0f);
     _totalTimeRect = D2D1::RectF(w - padX - timeW, 6.0f, w - padX, 28.0f);
 
     // Row 2: Controls (y: 32..70)
-    const float rowCy = 52.0f;
+    const float rowCy = std::max(46.0f, h - 24.0f);
     const float btnH = 32.0f;
     const float btnW = 34.0f;
 
@@ -524,8 +555,10 @@ void D2DControlBar::paint() {
 
     br->SetColor(mutedText);
     _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    _rt->DrawText(elapsed.c_str(), static_cast<UINT32>(elapsed.size()), _ctx.fontSmall,
-                  D2D1::RectF(14.0f, 6.0f, 68.0f, 28.0f), br);
+    D2D1_RECT_F elapsedRc = _compactLayout
+        ? D2D1::RectF(10.0f, 4.0f, 56.0f, 24.0f)
+        : D2D1::RectF(14.0f, 6.0f, 68.0f, 28.0f);
+    _rt->DrawText(elapsed.c_str(), static_cast<UINT32>(elapsed.size()), _ctx.fontSmall, elapsedRc, br);
     _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
     _rt->DrawText(total.c_str(), static_cast<UINT32>(total.size()), _ctx.fontSmall, _totalTimeRect, br);
     _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -586,8 +619,8 @@ void D2DControlBar::paint() {
         _rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(fillX, trackY), r, r), br, 2.0f);
     }
 
-    // Volume slider + % text
-    {
+    // Volume slider + % text (hidden in compact/PiP layout to avoid overlap)
+    if (!_compactLayout && _volRect.right > _volRect.left) {
         float vy = (_volRect.top + _volRect.bottom) * 0.5f;
         float vl = _volRect.left + 5.0f, vr = _volRect.right - 5.0f;
         float vf = std::clamp(_state.volume / 200.0f, 0.0f, 1.0f);

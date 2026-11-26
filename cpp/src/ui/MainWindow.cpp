@@ -17,17 +17,18 @@ namespace {
 constexpr UINT_PTR TimerTickId = 1;
 constexpr UINT_PTR TimerAnimId = 2;
 constexpr UINT_PTR TimerFsHideId = 3;
+constexpr UINT_PTR TimerClickPauseId = 4;
 
 // Static menu command IDs
 enum CmdId : UINT {
     ID_OPEN_FILE = 1001, ID_OPEN_MULTI, ID_OPEN_FOLDER, ID_OPEN_DISC, ID_OPEN_NETWORK, ID_OPEN_CAPTURE, ID_SAVE_PLAYLIST, ID_QUIT,
     ID_SEEK_FWD10, ID_SEEK_BACK10, ID_JUMP_TIME, ID_RECORD, ID_AB_LOOP, ID_EXPORT_AB, ID_PLAY_PAUSE, ID_STOP, ID_PREV, ID_NEXT, ID_NEXT_FRAME, ID_PREV_FRAME,
     ID_VOL_UP, ID_VOL_DOWN, ID_MUTE,
-    ID_FULLSCREEN, ID_MINI_PLAYER, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
-    ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP,
+    ID_FULLSCREEN, ID_MINI_PLAYER, ID_FIT_WINDOW, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
+    ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP, ID_SUB_SIZE_UP, ID_SUB_SIZE_DOWN, ID_SUB_APPEARANCE,
     ID_EFFECTS, ID_SYNC, ID_MEDIA_INFO, ID_CODEC_INFO, ID_MESSAGES, ID_PREFERENCES,
     ID_TOGGLE_PLAYLIST, ID_MINIMAL, ID_TOGGLE_STATUSBAR,
-    ID_SHORTCUTS, ID_ABOUT,
+    ID_SHORTCUTS, ID_USER_GUIDE, ID_ABOUT,
     ID_SPEED_FASTER, ID_SPEED_NORMAL, ID_SPEED_SLOWER,
 
     // Dynamic command ranges
@@ -320,6 +321,10 @@ void MainWindow::buildMenus() {
     addSep(mSub);
     addItem(mSub, ID_SUB_DELAY_DOWN, L"&Delay -50 ms\tG");
     addItem(mSub, ID_SUB_DELAY_UP, L"D&elay +50 ms\tH");
+    addSep(mSub);
+    addItem(mSub, ID_SUB_SIZE_UP, L"&Larger Subtitles\tAlt+Up");
+    addItem(mSub, ID_SUB_SIZE_DOWN, L"&Smaller Subtitles\tAlt+Down");
+    addItem(mSub, ID_SUB_APPEARANCE, L"Subtitle &Appearance...");
 
     HMENU mTools = addSub(_mainMenu, L"T&ools");
     addItem(mTools, ID_EFFECTS, L"&Effects and Filters...\tCtrl+E");
@@ -332,11 +337,14 @@ void MainWindow::buildMenus() {
     addItem(mTools, ID_PREFERENCES, L"&Preferences...\tCtrl+P");
 
     HMENU mView = addSub(_mainMenu, L"V&iew");
-    addItem(mView, ID_MINI_PLAYER, L"&Picture-in-Picture\tCtrl+Shift+P");
+    addItem(mView, ID_FIT_WINDOW, L"Fit &Window to Video\tCtrl+1");
+    addItem(mView, ID_MINI_PLAYER, L"&Picture-in-Picture\tShift+P");
     addItem(mView, ID_MINIMAL, L"&Minimal Interface\tCtrl+H");
     addItem(mView, ID_FULLSCREEN, L"&Fullscreen Interface\tF");
 
     HMENU mHelp = addSub(_mainMenu, L"&Help");
+    addItem(mHelp, ID_USER_GUIDE, L"&How to use this player and all its features");
+    addSep(mHelp);
     addItem(mHelp, ID_SHORTCUTS, L"&Keyboard Shortcuts");
     addItem(mHelp, ID_ABOUT, L"&About");
 }
@@ -455,7 +463,7 @@ void MainWindow::showContextMenu(int screenX, int screenY) {
 
     AppendMenuW(cm, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(cm, MF_STRING | (_isFullscreen ? MF_CHECKED : 0), ID_FULLSCREEN, L"Fullscreen\tF");
-    AppendMenuW(cm, MF_STRING | (_isMiniPlayer ? MF_CHECKED : 0), ID_MINI_PLAYER, L"Picture-in-Picture\tCtrl+Shift+P");
+    AppendMenuW(cm, MF_STRING | (_isMiniPlayer ? MF_CHECKED : 0), ID_MINI_PLAYER, L"Picture-in-Picture\tShift+P");
     AppendMenuW(cm, MF_STRING | (_hasVideo ? 0 : MF_GRAYED), ID_SNAPSHOT, L"Take Snapshot\tShift+S");
     AppendMenuW(cm, MF_STRING, ID_ROTATE, L"Rotate 90°\tCtrl+R");
     AppendMenuW(cm, MF_STRING | (_abStartMs.has_value() ? MF_CHECKED : 0), ID_AB_LOOP, L"A-B Loop\tShift+L");
@@ -519,9 +527,9 @@ void MainWindow::syncOverlays() {
         float scale = GetDpiForWindow(_hwnd) / 96.0f;
         if (scale <= 0.0f) scale = 1.0f;
         int vw = vr.right - vr.left;
-        int barH = static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
+        int barH = static_cast<int>(std::lround((_isMiniPlayer ? 64 : D2DControlBar::BarHeight) * scale));
         int bw = _isMiniPlayer
-            ? std::max(static_cast<int>(320 * scale), vw - static_cast<int>(16 * scale))
+            ? std::max(static_cast<int>(240 * scale), vw - static_cast<int>(16 * scale))
             : std::min(static_cast<int>(960 * scale), std::max(static_cast<int>(460 * scale), vw - static_cast<int>(72 * scale)));
         int bx = vr.left + (vw - bw) / 2;
         int by = vr.bottom - barH - static_cast<int>((_isMiniPlayer ? 8 : 22) * scale);
@@ -592,6 +600,10 @@ void MainWindow::runAction(const std::string& action) {
     else if (action == "AudioDelayUp") { int64_t ms = _engine.audioDelayUs() / 1000 + 50; _engine.setAudioDelayUs(ms * 1000); showOsd(L"Audio delay: " + std::to_wstring(ms) + L" ms"); }
     else if (action == "Fullscreen") setFullscreen(!_isFullscreen);
     else if (action == "MiniPlayer") setMiniPlayer(!_isMiniPlayer);
+    else if (action == "FitWindow") fitWindowToVideo(true);
+    else if (action == "SubSizeUp") stepSubtitleSize(1);
+    else if (action == "SubSizeDown") stepSubtitleSize(-1);
+    else if (action == "SubAppearance") openSubtitleAppearance();
     else if (action == "ExitFullscreen") {
         if (_isFullscreen) setFullscreen(false);
         else if (_isMiniPlayer) setMiniPlayer(false);
@@ -639,6 +651,7 @@ void MainWindow::runAction(const std::string& action) {
             if (restart) showOsd(L"Some changes apply after restarting Reel Player");
         }
     } else if (action == "MinimalInterface") setMinimal(!_isMinimal);
+    else if (action == "UserGuide") Dialogs::showUserGuide(_hwnd);
     else if (action == "Shortcuts") Dialogs::showShortcuts(_hwnd, _hotkeys);
     else if (action == "About") Dialogs::showAbout(_hwnd);
 }
@@ -703,6 +716,7 @@ void MainWindow::playItem(const MediaItemPtr& item, int64_t startMs, bool offerR
     dismissResume();
     _playlist.setCurrent(item);
     _appliedForCurrentMedia = false;
+    _fittedForCurrentMedia = false;
     _restart.reset();
     if (_isRecording) { _isRecording = false; _recordPath.clear(); }
 
@@ -1124,12 +1138,20 @@ void MainWindow::setMiniPlayer(bool on) {
         GetMonitorInfoW(MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
         float scale = GetDpiForWindow(_hwnd) / 96.0f;
         if (scale <= 0.0f) scale = 1.0f;
-        int mw = static_cast<int>(std::lround(440 * scale));
-        int mh = static_cast<int>(std::lround(248 * scale));
+        float pipW = 440.0f, pipH = 248.0f;
+        unsigned vw = 0, vh = 0;
+        if (_engine.videoSize(vw, vh) && vw > 0 && vh > 0) {
+            float fit = std::min(440.0f / static_cast<float>(vw), 340.0f / static_cast<float>(vh));
+            pipW = std::clamp(static_cast<float>(vw) * fit, 260.0f, 440.0f);
+            pipH = std::clamp(static_cast<float>(vh) * fit, 180.0f, 340.0f);
+        }
+        int mw = static_cast<int>(std::lround(pipW * scale));
+        int mh = static_cast<int>(std::lround(pipH * scale));
         int margin = static_cast<int>(std::lround(20 * scale));
         SetWindowPos(_hwnd, HWND_TOPMOST,
                      mi.rcWork.right - mw - margin, mi.rcWork.bottom - mh - margin,
                      mw, mh, SWP_FRAMECHANGED);
+        SetFocus(_hwnd);
         layoutChildren();
         showOsd(L"Picture-in-Picture (drag to move, Esc to exit)");
     } else {
@@ -1210,6 +1232,88 @@ void MainWindow::tickFsBarFade() {
     } else {
         _fullscreenBar->setOpacity(static_cast<BYTE>(_fsBarAlpha));
     }
+}
+
+void MainWindow::fitWindowToVideo(bool showFeedback) {
+    if (!_hwnd || _isFullscreen || _isMiniPlayer) return;
+    if (IsZoomed(_hwnd)) {
+        if (!showFeedback) return;
+        ShowWindow(_hwnd, SW_RESTORE);
+    }
+    unsigned vw = 0, vh = 0;
+    if (!_engine.videoSize(vw, vh) || vw == 0 || vh == 0) {
+        if (showFeedback) showOsd(L"No active video to fit");
+        return;
+    }
+
+    UINT dpi = GetDpiForWindow(_hwnd);
+    float scale = dpi > 0 ? static_cast<float>(dpi) / 96.0f : 1.0f;
+    int menuH = _isMinimal ? 0 : static_cast<int>(std::lround(D2DMenuBar::BarHeight * scale));
+    int barH = static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
+
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    int workW = mi.rcWork.right - mi.rcWork.left;
+    int workH = mi.rcWork.bottom - mi.rcWork.top;
+
+    DWORD style = static_cast<DWORD>(GetWindowLongPtrW(_hwnd, GWL_STYLE));
+    DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(_hwnd, GWL_EXSTYLE));
+    RECT borderRc{ 0, 0, 0, 0 };
+    AdjustWindowRectExForDpi(&borderRc, style, FALSE, exStyle, dpi);
+    int frameW = borderRc.right - borderRc.left;
+    int frameH = borderRc.bottom - borderRc.top;
+
+    int maxVidW = std::max(320, static_cast<int>(workW * 0.85) - frameW);
+    int maxVidH = std::max(240, static_cast<int>(workH * 0.85) - frameH - menuH - barH);
+    double fit = std::min({ 1.0, static_cast<double>(maxVidW) / vw, static_cast<double>(maxVidH) / vh });
+    // Ensure a comfortable minimum size so the control bar remains uncrowded
+    double minW = 560.0 * scale;
+    double minH = 280.0 * scale;
+    double targetVidW = vw * fit;
+    double targetVidH = vh * fit;
+    if (targetVidW < minW && targetVidH < minH) {
+        double up = std::min(static_cast<double>(maxVidW) / vw, static_cast<double>(maxVidH) / vh);
+        double need = std::min(up, std::max(minW / vw, minH / vh));
+        targetVidW = vw * need;
+        targetVidH = vh * need;
+    }
+
+    int winW = std::clamp(static_cast<int>(std::lround(targetVidW)) + frameW, static_cast<int>(std::lround(minW)) + frameW, workW);
+    int winH = std::clamp(static_cast<int>(std::lround(targetVidH)) + menuH + barH + frameH, static_cast<int>(std::lround(minH)) + menuH + barH + frameH, workH);
+
+    RECT cur{};
+    GetWindowRect(_hwnd, &cur);
+    int cx = (cur.left + cur.right) / 2;
+    int cy = (cur.top + cur.bottom) / 2;
+    int nx = std::clamp<int>(cx - winW / 2, mi.rcWork.left, mi.rcWork.right - winW);
+    int ny = std::clamp<int>(cy - winH / 2, mi.rcWork.top, mi.rcWork.bottom - winH);
+    SetWindowPos(_hwnd, nullptr, nx, ny, winW, winH, SWP_NOZORDER | SWP_NOACTIVATE);
+    if (showFeedback) {
+        showOsd(L"Window fitted to " + std::to_wstring(vw) + L"×" + std::to_wstring(vh));
+    }
+}
+
+void MainWindow::stepSubtitleSize(int delta) {
+    static constexpr const wchar_t* kSizes[] = { L"Smaller", L"Small", L"Normal", L"Large", L"Larger" };
+    auto& s = _settings.current();
+    int idx = 2;
+    for (int i = 0; i < 5; ++i) if (s.subtitleSize == kSizes[i]) { idx = i; break; }
+    int next = std::clamp(idx + delta, 0, 4);
+    if (next == idx) { showOsd(L"Subtitle size: " + s.subtitleSize); return; }
+    s.subtitleSize = kSizes[next];
+    _engine.setBaseOptions(PlayerService::buildOptions(s));
+    saveState();
+    if (_engine.isActive()) applyVideoFilters(L"Subtitle size: " + s.subtitleSize);
+    else showOsd(L"Subtitle size: " + s.subtitleSize);
+}
+
+void MainWindow::openSubtitleAppearance() {
+    auto& s = _settings.current();
+    if (!Dialogs::showSubtitleAppearance(_hwnd, s)) return;
+    _engine.setBaseOptions(PlayerService::buildOptions(s));
+    saveState();
+    if (_engine.isActive()) applyVideoFilters(L"Subtitle appearance updated");
+    else showOsd(L"Subtitle appearance saved");
 }
 
 void MainWindow::setMinimal(bool on) {
@@ -1303,7 +1407,14 @@ void MainWindow::drainVlcEvents() {
             case VlcEventKind::VoutChanged:
                 _hasVideo = ev.intArg > 0;
                 WinInterop::keepAwake(_isPlaying && _hasVideo);
-                if (ev.intArg > 0) WinInterop::blackenVlcWindows(_videoHost);
+                if (ev.intArg > 0) {
+                    WinInterop::blackenVlcWindows(_videoHost);
+                    if (!_fittedForCurrentMedia && _settings.current().autoFitWindow &&
+                        !_isFullscreen && !_isMiniPlayer && !IsZoomed(_hwnd)) {
+                        _fittedForCurrentMedia = true;
+                        fitWindowToVideo(false);
+                    }
+                }
                 pushControlBarState();
                 break;
             case VlcEventKind::SnapshotTaken:
@@ -1504,8 +1615,13 @@ LRESULT MainWindow::handleVideoMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 GetCursorPos(&_lastMousePt);
                 hideFullscreenBar();
             }
+            if (_settings.current().clickToPause && !_isIdle && _engine.isActive()) {
+                UINT delay = std::min<UINT>(220, std::max<UINT>(120, GetDoubleClickTime() / 2));
+                SetTimer(_hwnd, TimerClickPauseId, delay, nullptr);
+            }
             return 0;
         case WM_LBUTTONDBLCLK:
+            KillTimer(_hwnd, TimerClickPauseId);
             if (_isMiniPlayer) setMiniPlayer(false);
             else runAction("Fullscreen");
             return 0;
@@ -1579,6 +1695,9 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                     KillTimer(_hwnd, TimerAnimId);
                     _animTimerActive = false;
                 }
+            } else if (wp == TimerClickPauseId) {
+                KillTimer(_hwnd, TimerClickPauseId);
+                if (!_isIdle && _engine.isActive()) togglePlayPause();
             } else if (wp == TimerFsHideId) {
                 if ((_isFullscreen || _isMiniPlayer) && _fullscreenBar) {
                     if (_isUserSeeking) { SetTimer(_hwnd, TimerFsHideId, 1000, nullptr); return 0; }
@@ -1707,12 +1826,16 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 case ID_MUTE: runAction("Mute"); break;
                 case ID_FULLSCREEN: runAction("Fullscreen"); break;
                 case ID_MINI_PLAYER: runAction("MiniPlayer"); break;
+                case ID_FIT_WINDOW: runAction("FitWindow"); break;
                 case ID_ALWAYS_ON_TOP: runAction("AlwaysOnTop"); break;
                 case ID_ROTATE: runAction("RotateVideo"); break;
                 case ID_SNAPSHOT: runAction("Snapshot"); break;
                 case ID_ADD_SUB: runAction("AddSubtitle"); break;
                 case ID_SUB_DELAY_DOWN: runAction("SubDelayDown"); break;
                 case ID_SUB_DELAY_UP: runAction("SubDelayUp"); break;
+                case ID_SUB_SIZE_UP: runAction("SubSizeUp"); break;
+                case ID_SUB_SIZE_DOWN: runAction("SubSizeDown"); break;
+                case ID_SUB_APPEARANCE: runAction("SubAppearance"); break;
                 case ID_EFFECTS: runAction("Effects"); break;
                 case ID_SYNC: runAction("Sync"); break;
                 case ID_MEDIA_INFO: runAction("MediaInfo"); break;
@@ -1721,6 +1844,7 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 case ID_PREFERENCES: runAction("Preferences"); break;
                 case ID_TOGGLE_PLAYLIST: runAction("TogglePlaylist"); break;
                 case ID_MINIMAL: runAction("MinimalInterface"); break;
+                case ID_USER_GUIDE: runAction("UserGuide"); break;
                 case ID_SHORTCUTS: runAction("Shortcuts"); break;
                 case ID_ABOUT: runAction("About"); break;
             }
@@ -1728,10 +1852,10 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN: {
-            bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-            bool win = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
+            bool ctrl = ((GetKeyState(VK_CONTROL) | GetKeyState(VK_LCONTROL) | GetKeyState(VK_RCONTROL)) & 0x8000) != 0;
+            bool alt = ((GetKeyState(VK_MENU) | GetKeyState(VK_LMENU) | GetKeyState(VK_RMENU)) & 0x8000) != 0;
+            bool shift = ((GetKeyState(VK_SHIFT) | GetKeyState(VK_LSHIFT) | GetKeyState(VK_RSHIFT)) & 0x8000) != 0;
+            bool win = ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) != 0;
             if (auto g = HotkeyMap::gestureFromVk(static_cast<UINT>(wp), ctrl, alt, shift, win)) {
                 if (auto act = _hotkeys.resolve(*g)) {
                     runAction(*act);

@@ -52,6 +52,8 @@ public:
     static void showMediaInfo(HWND owner, PlayerService& engine);
     static void showMessages(HWND owner, LogBuffer& log);
     static bool showPreferences(HWND owner, SettingsService& settings, bool& outRestartRequired);
+    static bool showSubtitleAppearance(HWND owner, AppSettings& s);
+    static void showUserGuide(HWND owner);
     static void showShortcuts(HWND owner, const HotkeyMap& hotkeys);
     static void showAbout(HWND owner);
 };

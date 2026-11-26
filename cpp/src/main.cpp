@@ -93,8 +93,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
         win.showAndHandleCommandLine(cmd);
 
+        HWND mainHwnd = win.hwnd();
         MSG msg{};
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            if ((msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) &&
+                msg.hwnd != mainHwnd && IsChild(mainHwnd, msg.hwnd)) {
+                SendMessageW(mainHwnd, msg.message, msg.wParam, msg.lParam);
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

@@ -154,6 +154,7 @@ private:
     ControlBarCallbacks _cb;
 
     // Layout rects
+    bool _compactLayout = false;
     D2D1_RECT_F _seekRect{};
     D2D1_RECT_F _volRect{};
     D2D1_RECT_F _totalTimeRect{};
