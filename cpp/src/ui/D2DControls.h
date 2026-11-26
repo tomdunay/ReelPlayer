@@ -78,6 +78,8 @@ public:
     HWND hwnd() const { return _hwnd; }
     void setDarkTheme(bool dark);
     void setMenus(std::vector<std::pair<std::wstring, HMENU>> menus);
+    void setSidebarCallback(std::function<void()> onToggle);
+    void setSidebarActive(bool active);
     void redraw();
 
 private:
@@ -101,6 +103,10 @@ private:
     int _nextOpenIdx = -1;
     POINT _lastHookPt{ -1, -1 };
     bool _mouseInside = false;
+    bool _sidebarActive = false;
+    bool _hoverSidebar = false;
+    D2D1_RECT_F _sidebarRect{};
+    std::function<void()> _onToggleSidebar;
     std::vector<std::pair<std::wstring, HMENU>> _menus;
     std::vector<D2D1_RECT_F> _rects;
 };
@@ -142,11 +148,11 @@ private:
     std::wstring chapterAt(int64_t ms) const;
     void updateHoverPopup();
     void renderPopup(int anchorScreenX, int anchorScreenY, const std::wstring& line1, const std::wstring& line2,
-                     const std::vector<uint8_t>* imgBytes);
+                     int64_t thumbTimeMs, const std::vector<uint8_t>* imgBytes);
     void requestThumbnail(const std::wstring& path, int64_t ms);
     void startPrewarmThumbnails(const std::wstring& path, int64_t lengthMs);
     void stopPrewarm();
-    const std::vector<uint8_t>* findCachedThumb(int64_t ms, int64_t maxDeltaMs) const;
+    std::pair<int64_t, const std::vector<uint8_t>*> findCachedThumb(int64_t ms, int64_t maxDeltaMs) const;
 
     D2DContext& _ctx;
     bool _floating = false;
@@ -181,12 +187,17 @@ private:
     int64_t _thumbMediaLenMs = 0;
     int64_t _lastThumbBucket = -1;
     int64_t _thumbReqGen = 0;
-    ULONGLONG _lastSeekHoverMoveTick = 0;
     bool _onDemandBusy = false;
     int64_t _pendingDemandMs = -1;
-    std::vector<std::pair<int64_t, std::vector<uint8_t>>> _thumbCache;
     std::shared_ptr<std::atomic<bool>> _prewarmCancel;
     bool _ffmpegMissing = false;
+
+    // Cached WIC decoded bitmap for smooth 60-120fps mousemove across the seek bar
+    int64_t _cachedWicGen = -1;
+    int64_t _cachedWicMs = -1;
+    float _cachedWicW = 0.0f;
+    float _cachedWicH = 0.0f;
+    IWICBitmap* _cachedWicBmp = nullptr;
 };
 
 /// Layered transparent OSD pill + Error toast + Drop overlay rendered over libVLC's HWND.

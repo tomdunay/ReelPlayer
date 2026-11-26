@@ -105,7 +105,8 @@ private:
     void hideFullscreenBar(bool immediate = false);
     void tickFsBarFade();
     void ensureAnimTimer();
-    void setFileBrowser(bool on);
+    void setFileBrowser(bool on, bool animate = true);
+    void tickFileBrowserAnim();
     void setMinimal(bool on);
     void applyTheme();
     void updateWindowTitle();
@@ -166,6 +167,12 @@ private:
     bool _isMiniPlayer = false;
     bool _isMinimal = false;
     bool _showFileBrowser = false;
+    bool _browserAnimActive = false;
+    float _browserAnimProgress = 0.0f;
+    float _browserAnimFrom = 0.0f;
+    float _browserAnimTarget = 0.0f;
+    int64_t _browserAnimStartQpc = 0;
+    int64_t _qpcFreq = 0;
     bool _fsBarVisible = false;
     bool _animTimerActive = false;
     float _fsBarAlpha = 0.0f;

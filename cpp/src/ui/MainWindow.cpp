@@ -18,6 +18,7 @@ constexpr UINT_PTR TimerTickId = 1;
 constexpr UINT_PTR TimerAnimId = 2;
 constexpr UINT_PTR TimerFsHideId = 3;
 constexpr UINT_PTR TimerClickPauseId = 4;
+constexpr UINT_PTR TimerBrowserAnimId = 5;
 
 // Static menu command IDs
 enum CmdId : UINT {
@@ -149,6 +150,7 @@ bool MainWindow::create() {
         std::vector<std::pair<std::wstring, HMENU>> topMenus;
         for (int i = 0; i < 8; ++i) topMenus.emplace_back(kTopLabels[i], GetSubMenu(_mainMenu, i));
         _menuBar->setMenus(std::move(topMenus));
+        _menuBar->setSidebarCallback([this]() { setFileBrowser(!_showFileBrowser); });
     }
 
     // Left-hand docked File Browser panel (pure Direct2D directory tree, video-only, resizable)
@@ -254,7 +256,7 @@ bool MainWindow::create() {
 
     applyTheme();
     if (s.alwaysOnTop) SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-    if (s.showFileBrowser) setFileBrowser(true);
+    if (s.showFileBrowser) setFileBrowser(true, false);
 
     SetTimer(_hwnd, TimerTickId, 250, nullptr);
     layoutChildren();
@@ -535,46 +537,51 @@ void MainWindow::layoutChildren() {
 
     int menuH = (_isFullscreen || _isMiniPlayer || _isMinimal) ? 0 : static_cast<int>(std::lround(D2DMenuBar::BarHeight * scale));
     int barH = (_isFullscreen || _isMiniPlayer) ? 0 : static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
-    int browserW = 0;
-    if (_fileBrowser && _showFileBrowser && !_isFullscreen && !_isMiniPlayer && !_isMinimal) {
+    int browserFullW = 0;
+    int browserVisW = 0;
+    const bool allowBrowser = _fileBrowser && !_isFullscreen && !_isMiniPlayer && !_isMinimal;
+    if (allowBrowser && (_showFileBrowser || _browserAnimProgress > 0.001f)) {
         int desired = static_cast<int>(std::lround(
             std::clamp(_settings.current().fileBrowserWidth,
                        static_cast<double>(FileBrowserPanel::MinWidthDip),
                        static_cast<double>(FileBrowserPanel::MaxWidthDip)) * scale));
         int maxAllowed = std::max(0, w - static_cast<int>(std::lround(240.0f * scale)));
-        browserW = std::min(desired, maxAllowed);
+        browserFullW = std::min(desired, maxAllowed);
+        browserVisW = static_cast<int>(std::lround(static_cast<double>(browserFullW) * _browserAnimProgress));
     }
-    int vidW = std::max<int>(1, w - browserW);
+    int vidW = std::max<int>(1, w - browserVisW);
     int vidH = std::max<int>(1, h - menuH - barH);
 
-    if (_menuBar) {
-        if (menuH > 0) {
-            MoveWindow(_menuBar->hwnd(), 0, 0, w, menuH, TRUE);
-            ShowWindow(_menuBar->hwnd(), SW_SHOW);
+    HDWP dwp = BeginDeferWindowPos(5);
+    auto placeChild = [&](HWND child, int x, int y, int cw, int ch, bool visible) {
+        if (!child) return;
+        UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+        if (dwp) {
+            dwp = DeferWindowPos(dwp, child, nullptr, x, y, std::max(1, cw), std::max(1, ch), flags);
         } else {
-            ShowWindow(_menuBar->hwnd(), SW_HIDE);
+            SetWindowPos(child, nullptr, x, y, std::max(1, cw), std::max(1, ch), flags);
         }
+    };
+
+    if (_menuBar) {
+        placeChild(_menuBar->hwnd(), 0, 0, w, std::max(1, menuH), menuH > 0);
     }
     if (_fileBrowser) {
-        if (browserW > 0) {
-            MoveWindow(_fileBrowser->hwnd(), 0, menuH, browserW, std::max<int>(1, h - menuH), TRUE);
-            ShowWindow(_fileBrowser->hwnd(), SW_SHOW);
-        } else {
-            ShowWindow(_fileBrowser->hwnd(), SW_HIDE);
-        }
+        bool showPanel = (browserFullW > 0 && browserVisW > 0);
+        int panelX = browserVisW - browserFullW;
+        placeChild(_fileBrowser->hwnd(), panelX, menuH, std::max(1, browserFullW), std::max<int>(1, h - menuH), showPanel);
     }
     if (_dockedBar) {
-        if (_isFullscreen || _isMiniPlayer) ShowWindow(_dockedBar->hwnd(), SW_HIDE);
-        else {
-            MoveWindow(_dockedBar->hwnd(), browserW, menuH + vidH, vidW, barH, TRUE);
-            ShowWindow(_dockedBar->hwnd(), SW_SHOW);
-        }
+        bool showBar = !(_isFullscreen || _isMiniPlayer);
+        placeChild(_dockedBar->hwnd(), browserVisW, menuH + vidH, vidW, std::max(1, barH), showBar);
     }
-    if (_videoHost) MoveWindow(_videoHost, browserW, menuH, vidW, vidH, TRUE);
+    if (_videoHost) {
+        placeChild(_videoHost, browserVisW, menuH, vidW, vidH, true);
+    }
     if (_idlePanel) {
-        MoveWindow(_idlePanel->hwnd(), browserW, menuH, vidW, vidH, TRUE);
-        ShowWindow(_idlePanel->hwnd(), _isIdle ? SW_SHOW : SW_HIDE);
+        placeChild(_idlePanel->hwnd(), browserVisW, menuH, vidW, vidH, _isIdle);
     }
+    if (dwp) EndDeferWindowPos(dwp);
     syncOverlays();
 }
 
@@ -1394,12 +1401,13 @@ void MainWindow::openSubtitleAppearance() {
     else showOsd(L"Subtitle appearance saved");
 }
 
-void MainWindow::setFileBrowser(bool on) {
+void MainWindow::setFileBrowser(bool on, bool animate) {
     if (on && _isFullscreen) setFullscreen(false);
     if (on && _isMiniPlayer) setMiniPlayer(false);
     if (on && _isMinimal) _isMinimal = false;
     _showFileBrowser = on;
     _settings.current().showFileBrowser = on;
+    if (_menuBar) _menuBar->setSidebarActive(on);
     if (on && _fileBrowser) {
         std::wstring dir = _settings.current().fileBrowserDir;
         std::error_code ec;
@@ -1414,8 +1422,52 @@ void MainWindow::setFileBrowser(bool on) {
         if (auto cur = _playlist.current(); cur && cur->isFile()) _fileBrowser->setActiveFile(cur->location);
         _fileBrowser->openDirectory(dir);
     }
-    layoutChildren();
+
+    const float target = on ? 1.0f : 0.0f;
+    if (!animate || !_hwnd || !IsWindowVisible(_hwnd)) {
+        _browserAnimProgress = target;
+        _browserAnimFrom = target;
+        _browserAnimTarget = target;
+        if (_browserAnimActive && _hwnd) KillTimer(_hwnd, TimerBrowserAnimId);
+        _browserAnimActive = false;
+        layoutChildren();
+    } else {
+        if (_qpcFreq == 0) {
+            LARGE_INTEGER f{};
+            QueryPerformanceFrequency(&f);
+            _qpcFreq = std::max<int64_t>(1, f.QuadPart);
+        }
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        _browserAnimFrom = _browserAnimProgress;
+        _browserAnimTarget = target;
+        _browserAnimStartQpc = now.QuadPart;
+        if (!_browserAnimActive) {
+            _browserAnimActive = true;
+            SetTimer(_hwnd, TimerBrowserAnimId, 8, nullptr);
+        }
+        tickFileBrowserAnim();
+    }
     saveState();
+}
+
+void MainWindow::tickFileBrowserAnim() {
+    if (!_browserAnimActive) return;
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    const double elapsed = static_cast<double>(now.QuadPart - _browserAnimStartQpc) / static_cast<double>(_qpcFreq);
+    const double dist = std::abs(static_cast<double>(_browserAnimTarget - _browserAnimFrom));
+    const double dur = std::max(0.08, 0.26 * dist);
+    const float u = static_cast<float>(std::clamp(elapsed / dur, 0.0, 1.0));
+    const float eased = 1.0f - (1.0f - u) * (1.0f - u) * (1.0f - u);
+    _browserAnimProgress = _browserAnimFrom + (_browserAnimTarget - _browserAnimFrom) * eased;
+
+    if (u >= 1.0f) {
+        _browserAnimProgress = _browserAnimTarget;
+        _browserAnimActive = false;
+        if (_hwnd) KillTimer(_hwnd, TimerBrowserAnimId);
+    }
+    layoutChildren();
 }
 
 void MainWindow::setMinimal(bool on) {
@@ -1798,6 +1850,8 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                     KillTimer(_hwnd, TimerAnimId);
                     _animTimerActive = false;
                 }
+            } else if (wp == TimerBrowserAnimId) {
+                tickFileBrowserAnim();
             } else if (wp == TimerClickPauseId) {
                 KillTimer(_hwnd, TimerClickPauseId);
                 if (!_isIdle && _engine.isActive()) togglePlayPause();
@@ -1999,6 +2053,7 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(_hwnd, TimerTickId);
             KillTimer(_hwnd, TimerAnimId);
             KillTimer(_hwnd, TimerFsHideId);
+            KillTimer(_hwnd, TimerBrowserAnimId);
             DestroyWindow(_hwnd);
             return 0;
         }

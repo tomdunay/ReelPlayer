@@ -125,6 +125,16 @@ void D2DMenuBar::setMenus(std::vector<std::pair<std::wstring, HMENU>> menus) {
     redraw();
 }
 
+void D2DMenuBar::setSidebarCallback(std::function<void()> onToggle) {
+    _onToggleSidebar = std::move(onToggle);
+}
+
+void D2DMenuBar::setSidebarActive(bool active) {
+    if (_sidebarActive == active) return;
+    _sidebarActive = active;
+    redraw();
+}
+
 void D2DMenuBar::redraw() {
     if (_hwnd && IsWindowVisible(_hwnd)) InvalidateRect(_hwnd, nullptr, FALSE);
 }
@@ -145,7 +155,8 @@ void D2DMenuBar::ensureTarget() {
 
 void D2DMenuBar::computeLayout() {
     _rects.clear();
-    float x = 8.0f;
+    _sidebarRect = D2D1::RectF(6.0f, 3.0f, 34.0f, static_cast<float>(BarHeight - 3));
+    float x = 44.0f;
     for (const auto& [label, hm] : _menus) {
         float w = static_cast<float>(label.size()) * 7.2f + 18.0f;
         _rects.push_back(D2D1::RectF(x, 3.0f, x + w, static_cast<float>(BarHeight - 3)));
@@ -171,6 +182,45 @@ void D2DMenuBar::paint() {
 
     br->SetColor(hairline);
     _rt->DrawLine(D2D1::Point2F(0, sz.height - 0.5f), D2D1::Point2F(sz.width, sz.height - 0.5f), br, 1.0f);
+
+    // VS Code-style left sidebar toggle button
+    if (_sidebarRect.right > _sidebarRect.left) {
+        if (_hoverSidebar) {
+            br->SetColor(_sidebarActive ? rgba(0x14B8A6, 0.22f) : rgba(0x808080, 0.20f));
+            _rt->FillRoundedRectangle(D2D1::RoundedRect(_sidebarRect, 5.0f, 5.0f), br);
+        } else if (_sidebarActive) {
+            br->SetColor(rgba(0x14B8A6, 0.12f));
+            _rt->FillRoundedRectangle(D2D1::RoundedRect(_sidebarRect, 5.0f, 5.0f), br);
+        }
+
+        const float cx = (_sidebarRect.left + _sidebarRect.right) * 0.5f;
+        const float cy = (_sidebarRect.top + _sidebarRect.bottom) * 0.5f;
+        const float x0 = cx - 7.5f;
+        const float y0 = cy - 6.0f;
+        const float x1 = cx + 7.5f;
+        const float y1 = cy + 6.0f;
+        const float divX = x0 + 5.2f;
+
+        const D2D1_COLOR_F iconCol = _sidebarActive
+            ? (_dark ? rgba(0x2DD4BF) : rgba(0x0D9488))
+            : (_hoverSidebar ? fg : (_dark ? rgba(0xE4E4E7, 0.78f) : rgba(0x18181B, 0.78f)));
+        br->SetColor(iconCol);
+
+        // Filled left pane when active (VS Code layout-sidebar-left)
+        if (_sidebarActive) {
+            _rt->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(x0 + 0.5f, y0 + 0.5f, divX, y1 - 0.5f), 1.6f, 1.6f), br);
+            _rt->FillRectangle(D2D1::RectF(divX - 2.0f, y0 + 0.5f, divX, y1 - 0.5f), br);
+        }
+
+        // Outer window outline + vertical sidebar divider
+        _rt->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x0, y0, x1, y1), 2.0f, 2.0f), br, 1.3f);
+        _rt->DrawLine(D2D1::Point2F(divX, y0 + 0.4f), D2D1::Point2F(divX, y1 - 0.4f), br, 1.25f);
+
+        // Subtle separator between sidebar button and menu labels
+        br->SetColor(hairline);
+        _rt->DrawLine(D2D1::Point2F(39.0f, 7.0f), D2D1::Point2F(39.0f, sz.height - 7.0f), br, 1.0f);
+    }
 
     _ctx.fontUi->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     for (int i = 0; i < static_cast<int>(_menus.size()) && i < static_cast<int>(_rects.size()); ++i) {
@@ -312,15 +362,23 @@ LRESULT D2DMenuBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             float scale = dpiScaleFor(_hwnd);
             float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
             float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
+            bool overSidebar = ptInRect(_sidebarRect, x, y);
             int idx = -1;
-            for (int i = 0; i < static_cast<int>(_rects.size()); ++i)
-                if (ptInRect(_rects[i], x, y)) { idx = i; break; }
-            SetCursor(LoadCursorW(nullptr, idx >= 0 ? IDC_HAND : IDC_ARROW));
-            if (idx != _hoverIdx) { _hoverIdx = idx; redraw(); }
+            if (!overSidebar) {
+                for (int i = 0; i < static_cast<int>(_rects.size()); ++i)
+                    if (ptInRect(_rects[i], x, y)) { idx = i; break; }
+            }
+            SetCursor(LoadCursorW(nullptr, (overSidebar || idx >= 0) ? IDC_HAND : IDC_ARROW));
+            if (overSidebar != _hoverSidebar || idx != _hoverIdx) {
+                _hoverSidebar = overSidebar;
+                _hoverIdx = idx;
+                redraw();
+            }
             return 0;
         }
         case WM_MOUSELEAVE:
             _mouseInside = false;
+            _hoverSidebar = false;
             _hoverIdx = -1;
             redraw();
             return 0;
@@ -328,6 +386,10 @@ LRESULT D2DMenuBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             float scale = dpiScaleFor(_hwnd);
             float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
             float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
+            if (ptInRect(_sidebarRect, x, y)) {
+                if (_onToggleSidebar) _onToggleSidebar();
+                return 0;
+            }
             for (int i = 0; i < static_cast<int>(_rects.size()); ++i) {
                 if (ptInRect(_rects[i], x, y)) { openMenuAt(i); return 0; }
             }
@@ -350,11 +412,21 @@ struct ThumbResultMsg {
     bool ffmpegMissing = false;
 };
 
+// Shared UI-thread storyboard cache so docked & fullscreen control bars share pre-warmed frames
+// without running duplicate ffmpeg passes.
+struct SharedThumbStore {
+    std::wstring mediaPath;
+    int64_t gen = 0;
+    std::vector<std::pair<int64_t, std::vector<uint8_t>>> frames;
+};
+static SharedThumbStore g_thumbStore;
+
 D2DControlBar::D2DControlBar(D2DContext& ctx, bool floatingPill)
     : _ctx(ctx), _floating(floatingPill) {}
 
 D2DControlBar::~D2DControlBar() {
     stopPrewarm();
+    safeRelease(_cachedWicBmp);
     releaseTarget();
     if (_popupHwnd) DestroyWindow(_popupHwnd);
     if (_hwnd) DestroyWindow(_hwnd);
@@ -403,13 +475,27 @@ void D2DControlBar::setState(const ControlBarState& s) {
         stopPrewarm();
         _thumbMediaPath = s.mediaPath;
         _thumbMediaLenMs = 0;
-        _thumbCache.clear();
         _lastThumbBucket = -1;
         _pendingDemandMs = -1;
         _onDemandBusy = false;
-        ++_thumbReqGen;
+        safeRelease(_cachedWicBmp);
+        _cachedWicGen = -1;
+        _cachedWicMs = -1;
+        if (g_thumbStore.mediaPath != s.mediaPath) {
+            g_thumbStore.mediaPath = s.mediaPath;
+            g_thumbStore.frames.clear();
+            ++g_thumbStore.gen;
+        }
+        _thumbReqGen = g_thumbStore.gen;
     }
     _state = s;
+    // Start single-pass background keyframe storyboard pre-warming at IDLE priority
+    // (only from the docked bar; fullscreen bar reads the same shared cache).
+    if (!_floating && !_ffmpegMissing && _state.hasVideo && !_thumbMediaPath.empty() &&
+        _state.lengthMs > 2000 && _thumbMediaLenMs == 0) {
+        _thumbMediaLenMs = _state.lengthMs;
+        startPrewarmThumbnails(_thumbMediaPath, _thumbMediaLenMs);
+    }
     redraw();
 }
 
@@ -832,17 +918,20 @@ void D2DControlBar::stopPrewarm() {
     }
 }
 
-const std::vector<uint8_t>* D2DControlBar::findCachedThumb(int64_t ms, int64_t maxDeltaMs) const {
+std::pair<int64_t, const std::vector<uint8_t>*> D2DControlBar::findCachedThumb(int64_t ms, int64_t maxDeltaMs) const {
+    if (g_thumbStore.gen != _thumbReqGen) return { -1, nullptr };
     const std::vector<uint8_t>* best = nullptr;
+    int64_t bestMs = -1;
     int64_t bestDist = maxDeltaMs + 1;
-    for (const auto& kv : _thumbCache) {
+    for (const auto& kv : g_thumbStore.frames) {
         int64_t d = std::abs(kv.first - ms);
         if (d < bestDist) {
             bestDist = d;
+            bestMs = kv.first;
             best = &kv.second;
         }
     }
-    return best;
+    return { bestMs, best };
 }
 
 void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t lengthMs) {
@@ -852,16 +941,16 @@ void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t len
     int64_t gen = _thumbReqGen;
     HWND target = _hwnd;
 
-    // Extract up to ~48 evenly spaced keyframes in a single ultra-fast ffmpeg pass (-skip_frame nokey).
+    // Extract up to ~60 evenly spaced keyframes in a single ultra-fast IDLE-priority ffmpeg pass (-skip_frame nokey).
     double durSec = static_cast<double>(lengthMs) / 1000.0;
-    double stepSec = std::max(2.0, durSec / 48.0);
+    double stepSec = std::max(2.0, durSec / 60.0);
     int64_t stepMs = static_cast<int64_t>(std::lround(stepSec * 1000.0));
 
     std::thread([target, path, gen, stepSec, stepMs, cancel]() {
         wchar_t fpsBuf[48];
         std::swprintf(fpsBuf, 48, L"1/%.3f", stepSec);
         std::wstring cmd =
-            L"ffmpeg -v error -an -sn -dn -skip_frame nokey -i \"" + path +
+            L"ffmpeg -v error -threads 1 -an -sn -dn -skip_frame nokey -i \"" + path +
             L"\" -vf \"fps=" + std::wstring(fpsBuf) +
             L",scale=iw*sar:ih,scale='min(192,iw)':'min(144,ih)':force_original_aspect_ratio=decrease\""
             L" -f image2pipe -vcodec mjpeg -q:v 6 -";
@@ -880,7 +969,7 @@ void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t len
         PROCESS_INFORMATION pi{};
         std::wstring cmdCopy = cmd;
         if (!CreateProcessW(nullptr, cmdCopy.data(), nullptr, nullptr, TRUE,
-                            CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi)) {
+                            CREATE_NO_WINDOW | IDLE_PRIORITY_CLASS, nullptr, nullptr, &si, &pi)) {
             CloseHandle(wr);
             CloseHandle(rd);
             auto* msg = new ThumbResultMsg{ gen, 0, {}, false, true };
@@ -924,9 +1013,9 @@ void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t len
             if (pos > 0 && pos <= stream.size()) {
                 stream.erase(stream.begin(), stream.begin() + static_cast<ptrdiff_t>(pos));
             }
-            if (frameIdx >= 64) break;
+            if (frameIdx >= 72) break;
         }
-        if (cancel->load() || frameIdx >= 64) TerminateProcess(pi.hProcess, 0);
+        if (cancel->load() || frameIdx >= 72) TerminateProcess(pi.hProcess, 0);
         WaitForSingleObject(pi.hProcess, 1000);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -937,7 +1026,7 @@ void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t len
 void D2DControlBar::requestThumbnail(const std::wstring& path, int64_t ms) {
     if (_ffmpegMissing || path.empty() || !_state.hasVideo) return;
     int64_t bucket = (ms / 2000) * 2000;
-    if (findCachedThumb(bucket, 1000)) return;
+    if (findCachedThumb(bucket, 1500).second) return;
     if (_onDemandBusy) {
         _pendingDemandMs = bucket;
         return;
@@ -952,7 +1041,7 @@ void D2DControlBar::requestThumbnail(const std::wstring& path, int64_t ms) {
         wchar_t secBuf[32];
         std::swprintf(secBuf, 32, L"%.2f", bucket / 1000.0);
         // -noaccurate_seek + -skip_frame nokey + -an -sn -dn decodes only 1 keyframe (~5-10x faster!)
-        std::wstring cmd = L"ffmpeg -v error -an -sn -dn -noaccurate_seek -skip_frame nokey -ss " + std::wstring(secBuf) +
+        std::wstring cmd = L"ffmpeg -v error -threads 1 -an -sn -dn -noaccurate_seek -skip_frame nokey -ss " + std::wstring(secBuf) +
                            L" -i \"" + path + L"\" -frames:v 1 -vf \"scale=iw*sar:ih,scale='min(192,iw)':'min(144,ih)':force_original_aspect_ratio=decrease\" -f image2pipe -vcodec mjpeg -q:v 6 -";
 
         SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
@@ -969,7 +1058,8 @@ void D2DControlBar::requestThumbnail(const std::wstring& path, int64_t ms) {
         PROCESS_INFORMATION pi{};
         std::wstring cmdCopy = cmd;
         auto* msg = new ThumbResultMsg{ gen, bucket, {}, true, false };
-        if (!CreateProcessW(nullptr, cmdCopy.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        if (!CreateProcessW(nullptr, cmdCopy.data(), nullptr, nullptr, TRUE,
+                            CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi)) {
             CloseHandle(wr);
             CloseHandle(rd);
             msg->ffmpegMissing = true;
@@ -992,39 +1082,54 @@ void D2DControlBar::requestThumbnail(const std::wstring& path, int64_t ms) {
 }
 
 void D2DControlBar::renderPopup(int anchorScreenX, int anchorScreenY, const std::wstring& line1,
-                                const std::wstring& line2, const std::vector<uint8_t>* imgBytes) {
+                                const std::wstring& line2, int64_t thumbTimeMs, const std::vector<uint8_t>* imgBytes) {
     if (!_popupHwnd || !_ctx.d2d || line1.empty()) { hidePopup(); return; }
     float scale = dpiScaleFor(_hwnd);
 
-    // Decode thumbnail via WIC first so we know its exact pixel dimensions (works for JPEG & BMP)
-    IWICFormatConverter* conv = nullptr;
+    // Reuse cached decoded WIC bitmap when sliding across the same thumbnail bucket
     float thumbW = 0.0f;
     float thumbH = 0.0f;
+    IWICBitmapSource* bmpSrc = nullptr;
     if (imgBytes && imgBytes->size() > 16 && _ctx.wic) {
-        IWICStream* st = nullptr;
-        IWICBitmapDecoder* dec = nullptr;
-        IWICBitmapFrameDecode* fr = nullptr;
-        UINT bw = 0, bh = 0;
-        if (SUCCEEDED(_ctx.wic->CreateStream(&st)) &&
-            SUCCEEDED(st->InitializeFromMemory(const_cast<BYTE*>(imgBytes->data()), static_cast<DWORD>(imgBytes->size()))) &&
-            SUCCEEDED(_ctx.wic->CreateDecoderFromStream(st, nullptr, WICDecodeMetadataCacheOnLoad, &dec)) &&
-            SUCCEEDED(dec->GetFrame(0, &fr)) &&
-            SUCCEEDED(fr->GetSize(&bw, &bh)) && bw > 0 && bh > 0 &&
-            SUCCEEDED(_ctx.wic->CreateFormatConverter(&conv)) &&
-            SUCCEEDED(conv->Initialize(fr, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
-            constexpr float maxW = 192.0f;
-            constexpr float maxH = 135.0f;
-            float fit = std::min(maxW / static_cast<float>(bw), maxH / static_cast<float>(bh));
-            thumbW = std::max(36.0f, std::round(static_cast<float>(bw) * fit));
-            thumbH = std::max(36.0f, std::round(static_cast<float>(bh) * fit));
+        if (_cachedWicBmp && _cachedWicGen == _thumbReqGen && _cachedWicMs == thumbTimeMs) {
+            bmpSrc = _cachedWicBmp;
+            thumbW = _cachedWicW;
+            thumbH = _cachedWicH;
         } else {
+            safeRelease(_cachedWicBmp);
+            _cachedWicGen = -1;
+            _cachedWicMs = -1;
+            IWICStream* st = nullptr;
+            IWICBitmapDecoder* dec = nullptr;
+            IWICBitmapFrameDecode* fr = nullptr;
+            IWICFormatConverter* conv = nullptr;
+            UINT bw = 0, bh = 0;
+            if (SUCCEEDED(_ctx.wic->CreateStream(&st)) &&
+                SUCCEEDED(st->InitializeFromMemory(const_cast<BYTE*>(imgBytes->data()), static_cast<DWORD>(imgBytes->size()))) &&
+                SUCCEEDED(_ctx.wic->CreateDecoderFromStream(st, nullptr, WICDecodeMetadataCacheOnLoad, &dec)) &&
+                SUCCEEDED(dec->GetFrame(0, &fr)) &&
+                SUCCEEDED(fr->GetSize(&bw, &bh)) && bw > 0 && bh > 0 &&
+                SUCCEEDED(_ctx.wic->CreateFormatConverter(&conv)) &&
+                SUCCEEDED(conv->Initialize(fr, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom)) &&
+                SUCCEEDED(_ctx.wic->CreateBitmapFromSource(conv, WICBitmapCacheOnLoad, &_cachedWicBmp)) && _cachedWicBmp) {
+                constexpr float maxW = 192.0f;
+                constexpr float maxH = 135.0f;
+                float fit = std::min(maxW / static_cast<float>(bw), maxH / static_cast<float>(bh));
+                _cachedWicW = std::max(36.0f, std::round(static_cast<float>(bw) * fit));
+                _cachedWicH = std::max(36.0f, std::round(static_cast<float>(bh) * fit));
+                _cachedWicGen = _thumbReqGen;
+                _cachedWicMs = thumbTimeMs;
+                bmpSrc = _cachedWicBmp;
+                thumbW = _cachedWicW;
+                thumbH = _cachedWicH;
+            }
             safeRelease(conv);
+            safeRelease(fr);
+            safeRelease(dec);
+            safeRelease(st);
         }
-        safeRelease(fr);
-        safeRelease(dec);
-        safeRelease(st);
     }
-    bool hasThumb = (conv != nullptr && thumbW > 0.0f && thumbH > 0.0f);
+    bool hasThumb = (bmpSrc != nullptr && thumbW > 0.0f && thumbH > 0.0f);
     float textW = std::max(static_cast<float>(line1.size()) * 6.8f, static_cast<float>(line2.size()) * 6.8f) + 20.0f;
     float dw = std::clamp(std::max(thumbW + 12.0f, textW), 64.0f, 320.0f);
     float textH = line2.empty() ? 24.0f : 40.0f;
@@ -1067,7 +1172,7 @@ void D2DControlBar::renderPopup(int anchorScreenX, int anchorScreenY, const std:
         float textTop = 2.0f;
         if (hasThumb) {
             ID2D1Bitmap* d2dBmp = nullptr;
-            if (SUCCEEDED(rt->CreateBitmapFromWicBitmap(conv, nullptr, &d2dBmp)) && d2dBmp) {
+            if (SUCCEEDED(rt->CreateBitmapFromWicBitmap(bmpSrc, nullptr, &d2dBmp)) && d2dBmp) {
                 float tx = (dw - thumbW) * 0.5f;
                 rt->DrawBitmap(d2dBmp, D2D1::RectF(tx, 6.0f, tx + thumbW, 6.0f + thumbH));
                 d2dBmp->Release();
@@ -1093,7 +1198,6 @@ void D2DControlBar::renderPopup(int anchorScreenX, int anchorScreenY, const std:
         rt->EndDraw();
         rt->Release();
     }
-    safeRelease(conv);
 
     int px = anchorScreenX - pw / 2;
     int py = anchorScreenY - ph - static_cast<int>(std::lround(8.0f * scale));
@@ -1123,18 +1227,21 @@ void D2DControlBar::updateHoverPopup() {
         int64_t hoverMs = msFromX(_mouseX);
         std::wstring ts = TimeFormat::format(hoverMs);
         std::wstring ch = chapterAt(hoverMs);
+        int64_t thumbMs = -1;
         const std::vector<uint8_t>* thumb = nullptr;
-        if (_state.hasVideo && !_thumbMediaPath.empty() && !_seekDragging) {
-            thumb = findCachedThumb(hoverMs, 4000);
-            // Debounce on-demand ffmpeg by 90 ms so quickly clicking the seek bar never spawns ffmpeg or contends with VLC seek I/O
-            if (!findCachedThumb(hoverMs, 1500) && (GetTickCount64() - _lastSeekHoverMoveTick) >= 90) {
+        if (_state.hasVideo && !_thumbMediaPath.empty()) {
+            int64_t prewarmStep = std::max<int64_t>(2000, _state.lengthMs / 60);
+            auto hit = findCachedThumb(hoverMs, std::max<int64_t>(prewarmStep, 15000));
+            thumbMs = hit.first;
+            thumb = hit.second;
+            if (!_seekDragging && !findCachedThumb(hoverMs, std::max<int64_t>(2500, prewarmStep)).second) {
                 requestThumbnail(_thumbMediaPath, hoverMs);
             }
         }
         POINT pt = { static_cast<LONG>(std::lround(_mouseX * scale)),
                      static_cast<LONG>(std::lround(_seekRect.top * scale)) };
         ClientToScreen(_hwnd, &pt);
-        renderPopup(pt.x, pt.y, ts, ch, thumb);
+        renderPopup(pt.x, pt.y, ts, ch, thumbMs, thumb);
         return;
     }
     if (_hoverBtn >= 0 && _hoverBtn < static_cast<int>(_buttons.size())) {
@@ -1147,7 +1254,7 @@ void D2DControlBar::updateHoverPopup() {
         POINT pt = { static_cast<LONG>(std::lround((b.rc.left + b.rc.right) * 0.5f * scale)),
                      static_cast<LONG>(std::lround(b.rc.top * scale)) };
         ClientToScreen(_hwnd, &pt);
-        renderPopup(pt.x, pt.y, tip, L"", nullptr);
+        renderPopup(pt.x, pt.y, tip, L"", -1, nullptr);
         return;
     }
     hidePopup();
@@ -1215,12 +1322,6 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
 
             bool prevSeekHover = _seekHover;
             _seekHover = _state.isSeekable && ptInRect(_seekRect, _mouseX, _mouseY);
-            if (_seekHover) {
-                _lastSeekHoverMoveTick = GetTickCount64();
-                SetTimer(_hwnd, 91, 100, nullptr); // trigger thumbnail once cursor pauses briefly on seek bar
-            } else {
-                KillTimer(_hwnd, 91);
-            }
             _hoverBtn = -1;
             for (int i = 0; i < static_cast<int>(_buttons.size()); ++i) {
                 if (ptInRect(_buttons[i].rc, _mouseX, _mouseY)) { _hoverBtn = i; break; }
@@ -1233,7 +1334,6 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSELEAVE:
-            KillTimer(_hwnd, 91);
             _mouseInside = false;
             _seekHover = false;
             _hoverBtn = -1;
@@ -1241,21 +1341,14 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
             redraw();
             return 0;
-        case WM_TIMER:
-            if (wp == 91) {
-                KillTimer(_hwnd, 91);
-                if (_seekHover && !_seekDragging) updateHoverPopup();
-                return 0;
-            }
-            break;
         case WM_APP_THUMB_READY: {
             auto* res = reinterpret_cast<ThumbResultMsg*>(lp);
             if (res) {
                 if (res->fromOnDemand) _onDemandBusy = false;
                 if (res->ffmpegMissing) _ffmpegMissing = true;
-                else if (res->gen == _thumbReqGen && !res->imgBytes.empty()) {
-                    if (_thumbCache.size() >= 96) _thumbCache.erase(_thumbCache.begin());
-                    _thumbCache.emplace_back(res->timeMs, std::move(res->imgBytes));
+                else if (res->gen == g_thumbStore.gen && !res->imgBytes.empty()) {
+                    if (g_thumbStore.frames.size() >= 120) g_thumbStore.frames.erase(g_thumbStore.frames.begin());
+                    g_thumbStore.frames.emplace_back(res->timeMs, std::move(res->imgBytes));
                     if (_seekHover || _seekDragging) updateHoverPopup();
                 }
                 if (res->fromOnDemand && _pendingDemandMs >= 0 && !_ffmpegMissing && !_thumbMediaPath.empty()) {
@@ -1272,6 +1365,7 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
             float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
             if (_state.isSeekable && ptInRect(_seekRect, x, y)) {
+                _pendingDemandMs = -1; // don't spawn queued on-demand ffmpeg on top of a click-seek
                 _seekDragging = true;
                 SetCapture(_hwnd);
                 if (_cb.onSeekingChanged) _cb.onSeekingChanged(true);
