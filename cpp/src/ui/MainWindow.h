@@ -25,6 +25,7 @@ public:
     static constexpr UINT WM_APP_FORWARDED_ARGS = WM_APP + 2;
     static constexpr UINT WM_APP_SMTC_BUTTON = WM_APP + 3;
     static constexpr UINT WM_APP_REBUILD_DONE = WM_APP + 4;
+    static constexpr UINT WM_APP_OSD_MSG = WM_APP + 5;
 
     MainWindow(HINSTANCE hInst, D2DContext& d2d, SettingsService& settings, PlayerService& engine, ResumeStore& resume);
     ~MainWindow();
@@ -71,7 +72,7 @@ private:
     void nextItem();
     void previousItem();
     bool tryPlaySibling(int offset);
-    void seek(int64_t ms);
+    void seek(int64_t ms, bool asyncCoalesced = false);
     void seekRelative(int64_t deltaMs);
     void setVolume(int vol);
     void changeVolume(int delta);
@@ -79,6 +80,8 @@ private:
     void setRate(float r);
     void cycleAbLoop();
     void clearAbLoop(bool quiet = false);
+    void exportAbClip();
+    void previousFrame();
     void acceptResume();
     void dismissResume();
     void takeSnapshot();
@@ -93,8 +96,11 @@ private:
 
     // UI state
     void setFullscreen(bool on);
+    void setMiniPlayer(bool on);
     void showFullscreenBar();
-    void hideFullscreenBar();
+    void hideFullscreenBar(bool immediate = false);
+    void tickFsBarFade();
+    void ensureAnimTimer();
     void setMinimal(bool on);
     void applyTheme();
     void updateWindowTitle();
@@ -151,8 +157,12 @@ private:
     bool _isUserSeeking = false;
     bool _isRecording = false;
     bool _isFullscreen = false;
+    bool _isMiniPlayer = false;
     bool _isMinimal = false;
     bool _fsBarVisible = false;
+    bool _animTimerActive = false;
+    float _fsBarAlpha = 0.0f;
+    float _fsBarTargetAlpha = 0.0f;
     bool _cursorHidden = false;
     bool _appliedForCurrentMedia = false;
     bool _rebuilding = false;

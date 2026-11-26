@@ -2,10 +2,15 @@
 #include "core/MediaFiles.h"
 #include "core/StrUtil.h"
 #include "core/TimeFormat.h"
+#include "win/WinInterop.h"
 #include <shellapi.h>
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <thread>
 
 namespace reel {
 
@@ -85,6 +90,7 @@ void D2DContext::shutdown() {
 D2DMenuBar::D2DMenuBar(D2DContext& ctx) : _ctx(ctx) {}
 
 D2DMenuBar::~D2DMenuBar() {
+    safeRelease(_brush);
     safeRelease(_rt);
     if (_hwnd) DestroyWindow(_hwnd);
 }
@@ -133,6 +139,7 @@ void D2DMenuBar::ensureTarget() {
             &_rt)) && _rt) {
         float dpi = dpiScaleFor(_hwnd) * 96.0f;
         _rt->SetDpi(dpi, dpi);
+        _rt->CreateSolidColorBrush(rgba(0xFFFFFF), &_brush);
     }
 }
 
@@ -159,9 +166,8 @@ void D2DMenuBar::paint() {
     const D2D1_COLOR_F fg = _dark ? rgba(0xE4E4E7) : rgba(0x18181B);
     const D2D1_COLOR_F hairline = _dark ? rgba(0xFFFFFF, 0.10f) : rgba(0x000000, 0.10f);
     _rt->Clear(bg);
-
-    ID2D1SolidColorBrush* br = nullptr;
-    _rt->CreateSolidColorBrush(fg, &br);
+    ID2D1SolidColorBrush* br = _brush;
+    if (!br) { _rt->EndDraw(); return; }
 
     br->SetColor(hairline);
     _rt->DrawLine(D2D1::Point2F(0, sz.height - 0.5f), D2D1::Point2F(sz.width, sz.height - 0.5f), br, 1.0f);
@@ -177,8 +183,7 @@ void D2DMenuBar::paint() {
     }
     _ctx.fontUi->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    safeRelease(br);
-    if (_rt->EndDraw() == D2DERR_RECREATE_TARGET) safeRelease(_rt);
+    if (_rt->EndDraw() == D2DERR_RECREATE_TARGET) { safeRelease(_brush); safeRelease(_rt); }
 }
 
 void D2DMenuBar::openMenuAt(int index) {
@@ -257,17 +262,29 @@ LRESULT D2DMenuBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
 // D2DControlBar
 // ============================================================================
 
+static constexpr UINT WM_APP_THUMB_READY = WM_APP + 40;
+struct ThumbResultMsg {
+    int64_t gen = 0;
+    int64_t timeMs = 0;
+    std::vector<uint8_t> imgBytes;
+    bool fromOnDemand = false;
+    bool ffmpegMissing = false;
+};
+
 D2DControlBar::D2DControlBar(D2DContext& ctx, bool floatingPill)
     : _ctx(ctx), _floating(floatingPill) {}
 
 D2DControlBar::~D2DControlBar() {
+    stopPrewarm();
     releaseTarget();
+    if (_popupHwnd) DestroyWindow(_popupHwnd);
     if (_hwnd) DestroyWindow(_hwnd);
 }
 
 bool D2DControlBar::create(HWND parent, HINSTANCE hInst) {
     static bool registered = false;
     const wchar_t* cls = L"ReelD2DControlBar";
+    const wchar_t* popCls = L"ReelD2DPopupTip";
     if (!registered) {
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
@@ -276,6 +293,13 @@ bool D2DControlBar::create(HWND parent, HINSTANCE hInst) {
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.lpszClassName = cls;
         RegisterClassExW(&wc);
+
+        WNDCLASSEXW pwc{};
+        pwc.cbSize = sizeof(pwc);
+        pwc.lpfnWndProc = DefWindowProcW;
+        pwc.hInstance = hInst;
+        pwc.lpszClassName = popCls;
+        RegisterClassExW(&pwc);
         registered = true;
     }
 
@@ -284,21 +308,68 @@ bool D2DControlBar::create(HWND parent, HINSTANCE hInst) {
     _hwnd = CreateWindowExW(exStyle, cls, L"", style, 0, 0, 800, BarHeight, parent, nullptr, hInst, this);
     if (_hwnd && _floating) {
         SetLayeredWindowAttributes(_hwnd, 0, 240, LWA_ALPHA);
+        WinInterop::setWindowRoundedAndBackdrop(_hwnd, true);
+    }
+    if (_hwnd) {
+        _popupHwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            popCls, L"", WS_POPUP, 0, 0, 1, 1, parent, nullptr, hInst, nullptr);
     }
     return _hwnd != nullptr;
 }
 
 void D2DControlBar::setState(const ControlBarState& s) {
+    bool mediaChanged = (s.mediaPath != _thumbMediaPath);
+    if (mediaChanged) {
+        stopPrewarm();
+        _thumbMediaPath = s.mediaPath;
+        _thumbMediaLenMs = 0;
+        _thumbCache.clear();
+        _lastThumbBucket = -1;
+        _pendingDemandMs = -1;
+        _onDemandBusy = false;
+        ++_thumbReqGen;
+    }
     _state = s;
+    // Start single-pass background keyframe storyboard pre-warming once we know the duration
+    // (only on the docked bar so fullscreen/docked don't double-extract; or whichever is active).
+    if (!_floating && !_ffmpegMissing && _state.hasVideo && !_thumbMediaPath.empty() &&
+        _state.lengthMs > 2000 && _thumbMediaLenMs == 0) {
+        _thumbMediaLenMs = _state.lengthMs;
+        startPrewarmThumbnails(_thumbMediaPath, _thumbMediaLenMs);
+    }
     redraw();
 }
 
 void D2DControlBar::setOpacity(BYTE alpha) {
     if (_hwnd && _floating) SetLayeredWindowAttributes(_hwnd, 0, alpha, LWA_ALPHA);
+    if (alpha == 0) hidePopup();
 }
 
 void D2DControlBar::redraw() {
     if (_hwnd && IsWindowVisible(_hwnd)) InvalidateRect(_hwnd, nullptr, FALSE);
+}
+
+void D2DControlBar::hidePopup() {
+    if (_popupHwnd && IsWindowVisible(_popupHwnd)) ShowWindow(_popupHwnd, SW_HIDE);
+}
+
+bool D2DControlBar::isAnimating() const {
+    float target = (_seekHover || _seekDragging) ? 1.0f : 0.0f;
+    return std::abs(_seekAnim - target) > 0.01f;
+}
+
+bool D2DControlBar::tickAnimation() {
+    float target = (_seekHover || _seekDragging) ? 1.0f : 0.0f;
+    float diff = target - _seekAnim;
+    if (std::abs(diff) <= 0.01f) {
+        if (_seekAnim != target) { _seekAnim = target; redraw(); }
+        return false;
+    }
+    _seekAnim += diff * 0.35f;
+    if (std::abs(target - _seekAnim) <= 0.02f) _seekAnim = target;
+    redraw();
+    return std::abs(_seekAnim - target) > 0.01f;
 }
 
 void D2DControlBar::ensureTarget() {
@@ -312,10 +383,14 @@ void D2DControlBar::ensureTarget() {
             &_rt)) && _rt) {
         float dpi = dpiScaleFor(_hwnd) * 96.0f;
         _rt->SetDpi(dpi, dpi);
+        _rt->CreateSolidColorBrush(rgba(0xFFFFFF), &_brush);
     }
 }
 
-void D2DControlBar::releaseTarget() { safeRelease(_rt); }
+void D2DControlBar::releaseTarget() {
+    safeRelease(_brush);
+    safeRelease(_rt);
+}
 
 int64_t D2DControlBar::msFromX(float x) const {
     float usable = _seekRect.right - _seekRect.left - 12.0f;
@@ -373,7 +448,11 @@ void D2DControlBar::computeLayout(float w, float h) {
     if (_state.abStartMs.has_value()) {
         float pw = _state.abEndMs.has_value() ? 112.0f : 68.0f;
         _buttons.push_back({ D2D1::RectF(lx, rowCy - 12.0f, lx + pw, rowCy + 12.0f), "AbLoop", L"A-B Loop" });
-        lx += pw + 6.0f;
+        lx += pw + 4.0f;
+        if (_state.abEndMs.has_value()) {
+            _buttons.push_back({ D2D1::RectF(lx, rowCy - 12.0f, lx + 56.0f, rowCy + 12.0f), "ExportAbClip", L"Export A-B clip" });
+            lx += 60.0f;
+        }
     }
     if (_state.hasResumeOffer && lx + 148.0f < cx - 64.0f) {
         float pw = 122.0f;
@@ -381,7 +460,7 @@ void D2DControlBar::computeLayout(float w, float h) {
         _buttons.push_back({ D2D1::RectF(lx + pw + 2.0f, rowCy - 13.0f, lx + pw + 24.0f, rowCy + 13.0f), "DismissResume", L"Dismiss" });
     }
 
-    // Right cluster (right-to-left): Fullscreen | Effects | Snapshot | | Vol% | VolSlider | Mute
+    // Right cluster (right-to-left): Fullscreen | PiP | Effects | Snapshot | | Vol% | VolSlider | Mute
     float rx = w - padX;
     auto pushRight = [&](const char* act, const wchar_t* tip) {
         rx -= btnW;
@@ -389,6 +468,7 @@ void D2DControlBar::computeLayout(float w, float h) {
         rx -= 2.0f;
     };
     pushRight("Fullscreen", L"Fullscreen");
+    pushRight("MiniPlayer", L"Picture-in-Picture");
     pushRight("Effects", L"Effects");
     pushRight("Snapshot", L"Snapshot");
     rx -= 10.0f; // divider
@@ -424,8 +504,8 @@ void D2DControlBar::paint() {
 
     _rt->Clear(bgColor);
 
-    ID2D1SolidColorBrush* br = nullptr;
-    _rt->CreateSolidColorBrush(textColor, &br);
+    ID2D1SolidColorBrush* br = _brush;
+    if (!br) { _rt->EndDraw(); return; }
 
     // Top hairline (or rounded border in floating pill)
     if (_floating) {
@@ -450,9 +530,10 @@ void D2DControlBar::paint() {
     _rt->DrawText(total.c_str(), static_cast<UINT32>(total.size()), _ctx.fontSmall, _totalTimeRect, br);
     _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    // Seek bar (slim 3px at rest, thickens to 6px on hover/drag)
+    // Seek bar (smoothly expands from 3.5px to 6.5px on hover/drag with soft thumb glow)
     const bool seekHot = _seekHover || _seekDragging;
-    const float trackH = seekHot ? 6.0f : 3.0f;
+    const float anim = std::clamp(_seekAnim, 0.0f, 1.0f);
+    const float trackH = 3.5f + 3.0f * anim;
     const float trackY = (_seekRect.top + _seekRect.bottom) * 0.5f;
     const float trackL = _seekRect.left + 6.0f;
     const float trackR = _seekRect.right - 6.0f;
@@ -468,12 +549,13 @@ void D2DControlBar::paint() {
         _rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(trackL, trackY - trackH * 0.5f, fillX, trackY + trackH * 0.5f), trackH * 0.5f, trackH * 0.5f), br);
     }
 
-    // Chapter ticks
+    // Chapter ticks (subtle vertical ticks along the seek track)
     if (_state.chapters.size() > 1) {
-        br->SetColor(amber);
+        float tickH = 3.5f + 2.0f * anim;
+        br->SetColor(rgba(0xFFD166, 0.85f));
         for (size_t i = 1; i < _state.chapters.size(); ++i) {
             float cxMark = trackL + static_cast<float>(_state.chapters[i].fraction) * usable;
-            _rt->FillRectangle(D2D1::RectF(cxMark - 1.0f, trackY - 4.0f, cxMark + 1.0f, trackY + 4.0f), br);
+            _rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cxMark - 1.0f, trackY - tickH, cxMark + 1.0f, trackY + tickH), 1.0f, 1.0f), br);
         }
     }
 
@@ -491,32 +573,17 @@ void D2DControlBar::paint() {
         _rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ax - 1.5f, trackY - 6.0f, ax + 1.5f, trackY + 6.0f), 1.0f, 1.0f), br);
     }
 
-    // Seek thumb knob
+    // Seek thumb knob with soft glow halo on hover/drag
     if (_state.isSeekable) {
-        float r = seekHot ? 7.0f : 5.0f;
-        br->SetColor(rgba(0xFFFFFF, seekHot ? 1.0f : 0.92f));
+        float r = 5.0f + 2.2f * anim;
+        if (anim > 0.05f) {
+            br->SetColor(rgba(0x14B8A6, 0.28f * anim));
+            _rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(fillX, trackY), r + 4.5f * anim, r + 4.5f * anim), br);
+        }
+        br->SetColor(rgba(0xFFFFFF, 0.92f + 0.08f * anim));
         _rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(fillX, trackY), r, r), br);
-        br->SetColor(teal);
+        br->SetColor(seekHot ? tealHover : teal);
         _rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(fillX, trackY), r, r), br, 2.0f);
-    }
-
-    // Hover timestamp + chapter pill on seek bar
-    if (_seekHover && _state.lengthMs > 0) {
-        int64_t hoverMs = msFromX(_mouseX);
-        std::wstring tip = TimeFormat::format(hoverMs);
-        auto ch = chapterAt(hoverMs);
-        if (!ch.empty()) tip = ch + L"  Â·  " + tip;
-        float tipW = std::min(260.0f, std::max(54.0f, static_cast<float>(tip.size()) * 6.8f + 16.0f));
-        float tx = std::clamp(_mouseX - tipW * 0.5f, 8.0f, w - tipW - 8.0f);
-        D2D1_RECT_F tipRc = D2D1::RectF(tx, 1.0f, tx + tipW, 21.0f);
-        br->SetColor(rgba(0x14141A, 0.94f));
-        _rt->FillRoundedRectangle(D2D1::RoundedRect(tipRc, 5.0f, 5.0f), br);
-        br->SetColor(rgba(0xFFFFFF, 0.22f));
-        _rt->DrawRoundedRectangle(D2D1::RoundedRect(tipRc, 5.0f, 5.0f), br, 1.0f);
-        br->SetColor(rgba(0xFFFFFF));
-        _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        _rt->DrawText(tip.c_str(), static_cast<UINT32>(tip.size()), _ctx.fontSmall, tipRc, br);
-        _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
 
     // Volume slider + % text
@@ -590,6 +657,18 @@ void D2DControlBar::paint() {
             continue;
         }
 
+        if (act == "ExportAbClip") {
+            br->SetColor(hovered ? rgba(0x14B8A6, 0.34f) : rgba(0x14B8A6, 0.18f));
+            _rt->FillRoundedRectangle(D2D1::RoundedRect(b.rc, 10.0f, 10.0f), br);
+            br->SetColor(rgba(0x14B8A6, 0.45f));
+            _rt->DrawRoundedRectangle(D2D1::RoundedRect(b.rc, 10.0f, 10.0f), br, 1.0f);
+            br->SetColor(teal);
+            _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            _rt->DrawText(L"Export", 6, _ctx.fontSmall, b.rc, br);
+            _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            continue;
+        }
+
         if (act == "AcceptResume" || act == "DismissResume") {
             br->SetColor(hovered ? rgba(0x14B8A6, 0.32f) : rgba(0x14B8A6, 0.16f));
             _rt->FillRoundedRectangle(D2D1::RoundedRect(b.rc, 10.0f, 10.0f), br);
@@ -606,7 +685,8 @@ void D2DControlBar::paint() {
             continue;
         }
 
-        bool active = (act == "CycleLoop" && _state.loop != LoopMode::Off);
+        bool active = (act == "CycleLoop" && _state.loop != LoopMode::Off) ||
+                      (act == "MiniPlayer" && _state.isMiniPlayer);
         bool disabled = (act == "Snapshot" && !_state.hasVideo);
 
         if (active) {
@@ -628,6 +708,7 @@ void D2DControlBar::paint() {
         else if (act == "Mute") glyph = (_state.isMuted || _state.volume == 0) ? L"\uE74F" : (_state.volume < 34 ? L"\uE993" : (_state.volume < 67 ? L"\uE994" : L"\uE995"));
         else if (act == "Snapshot") glyph = L"\uE722";
         else if (act == "Effects") glyph = L"\uE9E9";
+        else if (act == "MiniPlayer") glyph = L"\uE8A7";
         else if (act == "Fullscreen") glyph = _state.isFullscreen ? L"\uE73F" : L"\uE740";
 
         D2D1_COLOR_F fg = active ? teal : textColor;
@@ -636,8 +717,336 @@ void D2DControlBar::paint() {
         _rt->DrawText(glyph, 1, _ctx.fontIcon, b.rc, br);
     }
 
-    safeRelease(br);
     if (_rt->EndDraw() == D2DERR_RECREATE_TARGET) releaseTarget();
+}
+
+void D2DControlBar::stopPrewarm() {
+    if (_prewarmCancel) {
+        _prewarmCancel->store(true);
+        _prewarmCancel.reset();
+    }
+}
+
+const std::vector<uint8_t>* D2DControlBar::findCachedThumb(int64_t ms, int64_t maxDeltaMs) const {
+    const std::vector<uint8_t>* best = nullptr;
+    int64_t bestDist = maxDeltaMs + 1;
+    for (const auto& kv : _thumbCache) {
+        int64_t d = std::abs(kv.first - ms);
+        if (d < bestDist) {
+            bestDist = d;
+            best = &kv.second;
+        }
+    }
+    return best;
+}
+
+void D2DControlBar::startPrewarmThumbnails(const std::wstring& path, int64_t lengthMs) {
+    stopPrewarm();
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    _prewarmCancel = cancel;
+    int64_t gen = _thumbReqGen;
+    HWND target = _hwnd;
+
+    // Extract up to ~48 evenly spaced keyframes in a single ultra-fast ffmpeg pass (-skip_frame nokey).
+    double durSec = static_cast<double>(lengthMs) / 1000.0;
+    double stepSec = std::max(2.0, durSec / 48.0);
+    int64_t stepMs = static_cast<int64_t>(std::lround(stepSec * 1000.0));
+
+    std::thread([target, path, gen, stepSec, stepMs, cancel]() {
+        wchar_t fpsBuf[48];
+        std::swprintf(fpsBuf, 48, L"1/%.3f", stepSec);
+        std::wstring cmd =
+            L"ffmpeg -v error -an -sn -dn -skip_frame nokey -i \"" + path +
+            L"\" -vf \"fps=" + std::wstring(fpsBuf) +
+            L",scale=iw*sar:ih,scale='min(192,iw)':'min(144,ih)':force_original_aspect_ratio=decrease\""
+            L" -f image2pipe -vcodec mjpeg -q:v 6 -";
+
+        SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+        HANDLE rd = nullptr, wr = nullptr;
+        if (!CreatePipe(&rd, &wr, &sa, 0)) return;
+        SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        si.hStdOutput = wr;
+        si.hStdError = wr;
+        PROCESS_INFORMATION pi{};
+        std::wstring cmdCopy = cmd;
+        if (!CreateProcessW(nullptr, cmdCopy.data(), nullptr, nullptr, TRUE,
+                            CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(wr);
+            CloseHandle(rd);
+            auto* msg = new ThumbResultMsg{ gen, 0, {}, false, true };
+            if (!PostMessageW(target, WM_APP_THUMB_READY, 0, reinterpret_cast<LPARAM>(msg))) delete msg;
+            return;
+        }
+        CloseHandle(wr);
+
+        std::vector<uint8_t> stream;
+        stream.reserve(64 * 1024);
+        uint8_t buf[8192];
+        DWORD got = 0;
+        int frameIdx = 0;
+        while (!cancel->load() && ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0) {
+            stream.insert(stream.end(), buf, buf + got);
+            // Parse complete JPEG frames (SOI 0xFF 0xD8 .. EOI 0xFF 0xD9)
+            size_t pos = 0;
+            while (pos + 3 < stream.size()) {
+                size_t soi = std::string::npos;
+                for (size_t i = pos; i + 1 < stream.size(); ++i) {
+                    if (stream[i] == 0xFF && stream[i + 1] == 0xD8) { soi = i; break; }
+                }
+                if (soi == std::string::npos) { stream.clear(); break; }
+                size_t eoi = std::string::npos;
+                for (size_t i = soi + 2; i + 1 < stream.size(); ++i) {
+                    if (stream[i] == 0xFF && stream[i + 1] == 0xD9) { eoi = i + 2; break; }
+                }
+                if (eoi == std::string::npos) {
+                    if (soi > 0) stream.erase(stream.begin(), stream.begin() + static_cast<ptrdiff_t>(soi));
+                    break;
+                }
+                if (cancel->load()) break;
+                auto* msg = new ThumbResultMsg{ gen, static_cast<int64_t>(frameIdx) * stepMs,
+                                                std::vector<uint8_t>(stream.begin() + static_cast<ptrdiff_t>(soi),
+                                                                     stream.begin() + static_cast<ptrdiff_t>(eoi)),
+                                                false, false };
+                ++frameIdx;
+                if (!PostMessageW(target, WM_APP_THUMB_READY, 0, reinterpret_cast<LPARAM>(msg))) delete msg;
+                pos = eoi;
+            }
+            if (pos > 0 && pos <= stream.size()) {
+                stream.erase(stream.begin(), stream.begin() + static_cast<ptrdiff_t>(pos));
+            }
+            if (frameIdx >= 64) break;
+        }
+        if (cancel->load() || frameIdx >= 64) TerminateProcess(pi.hProcess, 0);
+        WaitForSingleObject(pi.hProcess, 1000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        CloseHandle(rd);
+    }).detach();
+}
+
+void D2DControlBar::requestThumbnail(const std::wstring& path, int64_t ms) {
+    if (_ffmpegMissing || path.empty() || !_state.hasVideo) return;
+    int64_t bucket = (ms / 2000) * 2000;
+    if (findCachedThumb(bucket, 1000)) return;
+    if (_onDemandBusy) {
+        _pendingDemandMs = bucket;
+        return;
+    }
+    if (bucket == _lastThumbBucket) return;
+    _lastThumbBucket = bucket;
+    _onDemandBusy = true;
+    int64_t gen = _thumbReqGen;
+    HWND target = _hwnd;
+
+    std::thread([target, path, bucket, gen]() {
+        wchar_t secBuf[32];
+        std::swprintf(secBuf, 32, L"%.2f", bucket / 1000.0);
+        // -noaccurate_seek + -skip_frame nokey + -an -sn -dn decodes only 1 keyframe (~5-10x faster!)
+        std::wstring cmd = L"ffmpeg -v error -an -sn -dn -noaccurate_seek -skip_frame nokey -ss " + std::wstring(secBuf) +
+                           L" -i \"" + path + L"\" -frames:v 1 -vf \"scale=iw*sar:ih,scale='min(192,iw)':'min(144,ih)':force_original_aspect_ratio=decrease\" -f image2pipe -vcodec mjpeg -q:v 6 -";
+
+        SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+        HANDLE rd = nullptr, wr = nullptr;
+        if (!CreatePipe(&rd, &wr, &sa, 0)) return;
+        SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        si.hStdOutput = wr;
+        si.hStdError = wr;
+        PROCESS_INFORMATION pi{};
+        std::wstring cmdCopy = cmd;
+        auto* msg = new ThumbResultMsg{ gen, bucket, {}, true, false };
+        if (!CreateProcessW(nullptr, cmdCopy.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(wr);
+            CloseHandle(rd);
+            msg->ffmpegMissing = true;
+            if (!PostMessageW(target, WM_APP_THUMB_READY, 0, reinterpret_cast<LPARAM>(msg))) delete msg;
+            return;
+        }
+        CloseHandle(wr);
+        uint8_t buf[8192];
+        DWORD got = 0;
+        while (ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0) {
+            if (msg->imgBytes.size() + got > 256 * 1024) break;
+            msg->imgBytes.insert(msg->imgBytes.end(), buf, buf + got);
+        }
+        WaitForSingleObject(pi.hProcess, 1500);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        CloseHandle(rd);
+        if (!PostMessageW(target, WM_APP_THUMB_READY, 0, reinterpret_cast<LPARAM>(msg))) delete msg;
+    }).detach();
+}
+
+void D2DControlBar::renderPopup(int anchorScreenX, int anchorScreenY, const std::wstring& line1,
+                                const std::wstring& line2, const std::vector<uint8_t>* imgBytes) {
+    if (!_popupHwnd || !_ctx.d2d || line1.empty()) { hidePopup(); return; }
+    float scale = dpiScaleFor(_hwnd);
+
+    // Decode thumbnail via WIC first so we know its exact pixel dimensions (works for JPEG & BMP)
+    IWICFormatConverter* conv = nullptr;
+    float thumbW = 0.0f;
+    float thumbH = 0.0f;
+    if (imgBytes && imgBytes->size() > 16 && _ctx.wic) {
+        IWICStream* st = nullptr;
+        IWICBitmapDecoder* dec = nullptr;
+        IWICBitmapFrameDecode* fr = nullptr;
+        UINT bw = 0, bh = 0;
+        if (SUCCEEDED(_ctx.wic->CreateStream(&st)) &&
+            SUCCEEDED(st->InitializeFromMemory(const_cast<BYTE*>(imgBytes->data()), static_cast<DWORD>(imgBytes->size()))) &&
+            SUCCEEDED(_ctx.wic->CreateDecoderFromStream(st, nullptr, WICDecodeMetadataCacheOnLoad, &dec)) &&
+            SUCCEEDED(dec->GetFrame(0, &fr)) &&
+            SUCCEEDED(fr->GetSize(&bw, &bh)) && bw > 0 && bh > 0 &&
+            SUCCEEDED(_ctx.wic->CreateFormatConverter(&conv)) &&
+            SUCCEEDED(conv->Initialize(fr, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+            constexpr float maxW = 192.0f;
+            constexpr float maxH = 135.0f;
+            float fit = std::min(maxW / static_cast<float>(bw), maxH / static_cast<float>(bh));
+            thumbW = std::max(36.0f, std::round(static_cast<float>(bw) * fit));
+            thumbH = std::max(36.0f, std::round(static_cast<float>(bh) * fit));
+        } else {
+            safeRelease(conv);
+        }
+        safeRelease(fr);
+        safeRelease(dec);
+        safeRelease(st);
+    }
+    bool hasThumb = (conv != nullptr && thumbW > 0.0f && thumbH > 0.0f);
+    float textW = std::max(static_cast<float>(line1.size()) * 6.8f, static_cast<float>(line2.size()) * 6.8f) + 20.0f;
+    float dw = std::clamp(std::max(thumbW + 12.0f, textW), 64.0f, 320.0f);
+    float textH = line2.empty() ? 24.0f : 40.0f;
+    float dh = (hasThumb ? (thumbH + 10.0f) : 0.0f) + textH + 4.0f;
+
+    int pw = std::max(1, static_cast<int>(std::lround(dw * scale)));
+    int ph = std::max(1, static_cast<int>(std::lround(dh * scale)));
+
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = pw;
+    bi.bmiHeader.biHeight = -ph;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(screenDc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ oldBmp = SelectObject(memDc, bmp);
+
+    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    ID2D1DCRenderTarget* rt = nullptr;
+    if (SUCCEEDED(_ctx.d2d->CreateDCRenderTarget(&props, &rt)) && rt) {
+        RECT sub = { 0, 0, pw, ph };
+        rt->BindDC(memDc, &sub);
+        rt->SetDpi(scale * 96.0f, scale * 96.0f);
+        rt->BeginDraw();
+        rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+        ID2D1SolidColorBrush* br = nullptr;
+        rt->CreateSolidColorBrush(rgba(0x14141A, 0.96f), &br);
+        D2D1_RECT_F card = D2D1::RectF(0.5f, 0.5f, dw - 0.5f, dh - 0.5f);
+        rt->FillRoundedRectangle(D2D1::RoundedRect(card, 7.0f, 7.0f), br);
+        br->SetColor(rgba(0xFFFFFF, 0.20f));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(card, 7.0f, 7.0f), br, 1.0f);
+
+        float textTop = 2.0f;
+        if (hasThumb) {
+            ID2D1Bitmap* d2dBmp = nullptr;
+            if (SUCCEEDED(rt->CreateBitmapFromWicBitmap(conv, nullptr, &d2dBmp)) && d2dBmp) {
+                float tx = (dw - thumbW) * 0.5f;
+                rt->DrawBitmap(d2dBmp, D2D1::RectF(tx, 6.0f, tx + thumbW, 6.0f + thumbH));
+                d2dBmp->Release();
+            }
+            textTop = thumbH + 9.0f;
+        }
+
+        _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        br->SetColor(rgba(0xF4F4F6));
+        if (line2.empty()) {
+            rt->DrawText(line1.c_str(), static_cast<UINT32>(line1.size()), _ctx.fontSmall,
+                         D2D1::RectF(6.0f, textTop, dw - 6.0f, dh - 2.0f), br);
+        } else {
+            rt->DrawText(line1.c_str(), static_cast<UINT32>(line1.size()), _ctx.fontSmall,
+                         D2D1::RectF(6.0f, textTop, dw - 6.0f, textTop + 18.0f), br);
+            br->SetColor(rgba(0xA1A1AA));
+            rt->DrawText(line2.c_str(), static_cast<UINT32>(line2.size()), _ctx.fontSmall,
+                         D2D1::RectF(6.0f, textTop + 17.0f, dw - 6.0f, dh - 2.0f), br);
+        }
+        _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        safeRelease(br);
+        rt->EndDraw();
+        rt->Release();
+    }
+    safeRelease(conv);
+
+    int px = anchorScreenX - pw / 2;
+    int py = anchorScreenY - ph - static_cast<int>(std::lround(8.0f * scale));
+    HMONITOR mon = MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(mi) };
+    if (GetMonitorInfoW(mon, &mi)) {
+        px = std::clamp<int>(px, mi.rcWork.left + 4, mi.rcWork.right - pw - 4);
+        py = std::max<int>(py, mi.rcWork.top + 4);
+    }
+    POINT ptDst = { px, py };
+    SIZE szWnd = { pw, ph };
+    POINT ptSrc = { 0, 0 };
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    ShowWindow(_popupHwnd, SW_SHOWNOACTIVATE);
+    UpdateLayeredWindow(_popupHwnd, screenDc, &ptDst, &szWnd, memDc, &ptSrc, 0, &bf, ULW_ALPHA);
+
+    SelectObject(memDc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+}
+
+void D2DControlBar::updateHoverPopup() {
+    if (!_hwnd || !IsWindowVisible(_hwnd) || !_mouseInside) { hidePopup(); return; }
+    float scale = dpiScaleFor(_hwnd);
+    if ((_seekHover || _seekDragging) && _state.lengthMs > 0) {
+        int64_t hoverMs = msFromX(_mouseX);
+        std::wstring ts = TimeFormat::format(hoverMs);
+        std::wstring ch = chapterAt(hoverMs);
+        const std::vector<uint8_t>* thumb = nullptr;
+        if (_state.hasVideo && !_thumbMediaPath.empty()) {
+            // Instant hit from pre-warmed storyboard or nearest cached keyframe (within 15s)
+            int64_t prewarmStep = std::max<int64_t>(2000, _state.lengthMs / 48);
+            thumb = findCachedThumb(hoverMs, std::max<int64_t>(prewarmStep, 15000));
+            if (!findCachedThumb(hoverMs, std::max<int64_t>(2500, prewarmStep))) {
+                requestThumbnail(_thumbMediaPath, hoverMs);
+            }
+        }
+        POINT pt = { static_cast<LONG>(std::lround(_mouseX * scale)),
+                     static_cast<LONG>(std::lround(_seekRect.top * scale)) };
+        ClientToScreen(_hwnd, &pt);
+        renderPopup(pt.x, pt.y, ts, ch, thumb);
+        return;
+    }
+    if (_hoverBtn >= 0 && _hoverBtn < static_cast<int>(_buttons.size())) {
+        const auto& b = _buttons[_hoverBtn];
+        std::wstring tip = b.tooltip;
+        if (_cb.getShortcutHint) {
+            std::wstring key = _cb.getShortcutHint(b.action);
+            if (!key.empty()) tip += L"  (" + key + L")";
+        }
+        POINT pt = { static_cast<LONG>(std::lround((b.rc.left + b.rc.right) * 0.5f * scale)),
+                     static_cast<LONG>(std::lround(b.rc.top * scale)) };
+        ClientToScreen(_hwnd, &pt);
+        renderPopup(pt.x, pt.y, tip, L"", nullptr);
+        return;
+    }
+    hidePopup();
 }
 
 LRESULT CALLBACK D2DControlBar::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -685,11 +1094,12 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 int64_t ms = msFromX(_mouseX);
                 _state.positionMs = ms;
                 ULONGLONG now = GetTickCount64();
-                if (now - _lastLiveSeekTick > 100) {
+                if (now - _lastLiveSeekTick > 75) {
                     _lastLiveSeekTick = now;
                     _lastSeekMs = ms;
-                    if (_cb.onSeek) _cb.onSeek(ms);
+                    if (_cb.onSeek) _cb.onSeek(ms, true);
                 }
+                updateHoverPopup();
                 redraw();
                 return 0;
             }
@@ -699,6 +1109,7 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
 
+            bool prevSeekHover = _seekHover;
             _seekHover = _state.isSeekable && ptInRect(_seekRect, _mouseX, _mouseY);
             _hoverBtn = -1;
             for (int i = 0; i < static_cast<int>(_buttons.size()); ++i) {
@@ -706,6 +1117,8 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             }
             bool hand = _seekHover || _hoverBtn >= 0 || ptInRect(_volRect, _mouseX, _mouseY) || ptInRect(_totalTimeRect, _mouseX, _mouseY);
             SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW));
+            if (_seekHover != prevSeekHover && _cb.onNeedAnimTick) _cb.onNeedAnimTick();
+            updateHoverPopup();
             redraw();
             return 0;
         }
@@ -713,8 +1126,29 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             _mouseInside = false;
             _seekHover = false;
             _hoverBtn = -1;
+            hidePopup();
+            if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
             redraw();
             return 0;
+        case WM_APP_THUMB_READY: {
+            auto* res = reinterpret_cast<ThumbResultMsg*>(lp);
+            if (res) {
+                if (res->fromOnDemand) _onDemandBusy = false;
+                if (res->ffmpegMissing) _ffmpegMissing = true;
+                else if (res->gen == _thumbReqGen && !res->imgBytes.empty()) {
+                    if (_thumbCache.size() >= 96) _thumbCache.erase(_thumbCache.begin());
+                    _thumbCache.emplace_back(res->timeMs, std::move(res->imgBytes));
+                    if (_seekHover || _seekDragging) updateHoverPopup();
+                }
+                if (res->fromOnDemand && _pendingDemandMs >= 0 && !_ffmpegMissing && !_thumbMediaPath.empty()) {
+                    int64_t nextMs = _pendingDemandMs;
+                    _pendingDemandMs = -1;
+                    requestThumbnail(_thumbMediaPath, nextMs);
+                }
+                delete res;
+            }
+            return 0;
+        }
         case WM_LBUTTONDOWN: {
             float scale = dpiScaleFor(_hwnd);
             float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
@@ -727,7 +1161,9 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 _state.positionMs = ms;
                 _lastSeekMs = ms;
                 _lastLiveSeekTick = GetTickCount64();
-                if (_cb.onSeek) _cb.onSeek(ms);
+                if (_cb.onSeek) _cb.onSeek(ms, true);
+                if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
+                updateHoverPopup();
                 redraw();
                 return 0;
             }
@@ -759,9 +1195,11 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 _seekDragging = false;
                 ReleaseCapture();
                 int64_t ms = msFromX(x);
-                if (ms != _lastSeekMs && _cb.onSeek) _cb.onSeek(ms);
+                if (_cb.onSeek) _cb.onSeek(ms, false);
                 _lastSeekMs = -1;
                 if (_cb.onSeekingChanged) _cb.onSeekingChanged(false);
+                if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
+                updateHoverPopup();
                 redraw();
                 return 0;
             }

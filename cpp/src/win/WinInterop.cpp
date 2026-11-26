@@ -80,6 +80,18 @@ void WinInterop::setDarkTitleBar(HWND hwnd, bool dark) {
     }
 }
 
+void WinInterop::setWindowRoundedAndBackdrop(HWND hwnd, bool acrylic) {
+    if (!hwnd) return;
+    // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2 (Win11)
+    DWORD corner = 2;
+    DwmSetWindowAttribute(hwnd, 33, &corner, sizeof(corner));
+    if (acrylic) {
+        // DWMWA_SYSTEMBACKDROP_TYPE = 38, DWMSBT_TRANSIENTWINDOW (Acrylic) = 3 (Win11 22H2+)
+        DWORD backdrop = 3;
+        DwmSetWindowAttribute(hwnd, 38, &backdrop, sizeof(backdrop));
+    }
+}
+
 bool WinInterop::systemUsesLightTheme() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
@@ -198,7 +210,7 @@ TaskbarController::~TaskbarController() {
 }
 
 HICON TaskbarController::makeGlyphIcon(bool isPlay, bool isPrev, bool isNext) {
-    const int sz = 16;
+    const int sz = 24;
     BITMAPV5HEADER bi{};
     bi.bV5Size = sizeof(bi);
     bi.bV5Width = sz;
@@ -218,31 +230,38 @@ HICON TaskbarController::makeGlyphIcon(bool isPlay, bool isPrev, bool isNext) {
     if (!colorBmp || !bits) return nullptr;
 
     std::memset(bits, 0, sz * sz * 4);
-    auto setPx = [&](int x, int y) {
-        if (x >= 0 && x < sz && y >= 0 && y < sz) bits[y * sz + x] = 0xFFFFFFFF;
+    auto setPx = [&](int x, int y, uint8_t a = 255) {
+        if (x >= 0 && x < sz && y >= 0 && y < sz) {
+            bits[y * sz + x] = (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(a) << 16) |
+                               (static_cast<uint32_t>(a) << 8) | static_cast<uint32_t>(a);
+        }
     };
     if (isPlay) {
-        for (int y = 2; y <= 13; ++y) {
-            int half = std::abs(y - 7);
-            int maxX = 13 - half * 2;
-            for (int x = 3; x <= maxX; ++x) setPx(x, y);
+        for (int y = 4; y <= 19; ++y) {
+            double half = std::abs(y - 11.5);
+            double maxX = 19.5 - half * 1.65;
+            for (int x = 6; x <= static_cast<int>(maxX); ++x) setPx(x, y);
+            double frac = maxX - std::floor(maxX);
+            if (frac > 0.15) setPx(static_cast<int>(maxX) + 1, y, static_cast<uint8_t>(frac * 255));
         }
     } else if (isPrev) {
-        for (int y = 3; y <= 12; ++y) { setPx(3, y); setPx(4, y); }
-        for (int y = 3; y <= 12; ++y) {
-            int d = std::abs(y - 7);
-            for (int x = 6 + d; x <= 13; ++x) setPx(x, y);
+        for (int y = 5; y <= 18; ++y) { setPx(4, y); setPx(5, y); setPx(6, y); }
+        for (int y = 5; y <= 18; ++y) {
+            double d = std::abs(y - 11.5);
+            double minX = 8.5 + d * 1.45;
+            for (int x = static_cast<int>(std::ceil(minX)); x <= 19; ++x) setPx(x, y);
         }
     } else if (isNext) {
-        for (int y = 3; y <= 12; ++y) { setPx(11, y); setPx(12, y); }
-        for (int y = 3; y <= 12; ++y) {
-            int d = std::abs(y - 7);
-            for (int x = 2; x <= 9 - d; ++x) setPx(x, y);
+        for (int y = 5; y <= 18; ++y) { setPx(17, y); setPx(18, y); setPx(19, y); }
+        for (int y = 5; y <= 18; ++y) {
+            double d = std::abs(y - 11.5);
+            double maxX = 15.5 - d * 1.45;
+            for (int x = 4; x <= static_cast<int>(maxX); ++x) setPx(x, y);
         }
     } else { // Pause
-        for (int y = 2; y <= 13; ++y) {
-            for (int x = 3; x <= 6; ++x) setPx(x, y);
-            for (int x = 9; x <= 12; ++x) setPx(x, y);
+        for (int y = 4; y <= 19; ++y) {
+            for (int x = 5; x <= 9; ++x) setPx(x, y);
+            for (int x = 14; x <= 18; ++x) setPx(x, y);
         }
     }
 

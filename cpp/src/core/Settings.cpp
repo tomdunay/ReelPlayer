@@ -21,6 +21,15 @@ static std::wstring knownFolder(REFKNOWNFOLDERID id) {
 }
 
 std::wstring SettingsService::appDataDirectory() {
+    // Portable mode: if portable.txt exists next to ReelPlayer.exe, store config/resume/logs beside the exe.
+    wchar_t exeBuf[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exeBuf, MAX_PATH) > 0) {
+        fs::path exeDir = fs::path(exeBuf).parent_path();
+        std::error_code ec;
+        if (fs::exists(exeDir / L"portable.txt", ec)) {
+            return (exeDir / L"data").wstring();
+        }
+    }
     auto appData = knownFolder(FOLDERID_RoamingAppData);
     return (fs::path(appData) / L"ReelPlayer").wstring();
 }
@@ -85,6 +94,12 @@ AppSettings& SettingsService::load() {
         getBool("StartFullscreen", s.startFullscreen);
 
         getBool("HardwareDecoding", s.hardwareDecoding);
+        getWstr("HwDecodeMode", s.hwDecodeMode);
+        if (!j.contains("HwDecodeMode") && !s.hardwareDecoding) s.hwDecodeMode = L"Off";
+        s.hardwareDecoding = (s.hwDecodeMode != L"Off");
+        getInt("FileCachingMs", s.fileCachingMs);
+        getInt("NetworkCachingMs", s.networkCachingMs);
+        getBool("FastSeek", s.fastSeek);
         getWstr("AudioDeviceId", s.audioDeviceId);
 
         getWstr("SubtitleLanguage", s.subtitleLanguage);
@@ -147,6 +162,10 @@ bool SettingsService::save() const {
         j["AutoAdvanceFolder"] = s.autoAdvanceFolder;
         j["StartFullscreen"] = s.startFullscreen;
         j["HardwareDecoding"] = s.hardwareDecoding;
+        j["HwDecodeMode"] = toUtf8(s.hwDecodeMode);
+        j["FileCachingMs"] = s.fileCachingMs;
+        j["NetworkCachingMs"] = s.networkCachingMs;
+        j["FastSeek"] = s.fastSeek;
         j["AudioDeviceId"] = s.audioDeviceId.empty() ? json(nullptr) : json(toUtf8(s.audioDeviceId));
         j["SubtitleLanguage"] = toUtf8(s.subtitleLanguage);
         j["SubtitleEncoding"] = toUtf8(s.subtitleEncoding);

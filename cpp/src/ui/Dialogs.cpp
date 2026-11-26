@@ -6,6 +6,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <uxtheme.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -26,15 +27,24 @@ static HFONT makeDialogFont(float scale) {
 
 // Helper for simple modal Win32 dialog windows built in code (auto-scaled for Per-Monitor DPI).
 struct ModalDialog {
+    static constexpr COLORREF kBgColor = RGB(24, 24, 31);
+    static constexpr COLORREF kCtrlBgColor = RGB(34, 34, 44);
+    static constexpr COLORREF kTextColor = RGB(244, 244, 246);
+
     HWND hwnd = nullptr;
     HWND owner = nullptr;
+    HWND keyCaptureHwnd = nullptr;
     HFONT font = nullptr;
+    HBRUSH bgBrush = nullptr;
+    HBRUSH ctrlBgBrush = nullptr;
     float scale = 1.0f;
     bool accepted = false;
     std::function<LRESULT(HWND, UINT, WPARAM, LPARAM)> handler;
 
     ~ModalDialog() {
         if (font) DeleteObject(font);
+        if (bgBrush) DeleteObject(bgBrush);
+        if (ctrlBgBrush) DeleteObject(ctrlBgBrush);
     }
 
     static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -50,6 +60,36 @@ struct ModalDialog {
             LRESULT res = d->handler(h, m, w, l);
             if (res != -1) return res;
         }
+        if (d) {
+            if (m == WM_ERASEBKGND && d->bgBrush) {
+                HDC hdc = reinterpret_cast<HDC>(w);
+                RECT rc{};
+                GetClientRect(h, &rc);
+                FillRect(hdc, &rc, d->bgBrush);
+                return 1;
+            }
+            if (m == WM_CTLCOLORDLG && d->bgBrush) {
+                return reinterpret_cast<LRESULT>(d->bgBrush);
+            }
+            if ((m == WM_CTLCOLORSTATIC || m == WM_CTLCOLORBTN) && d->bgBrush) {
+                HDC hdc = reinterpret_cast<HDC>(w);
+                HWND ctrl = reinterpret_cast<HWND>(l);
+                wchar_t cls[32] = {};
+                if (ctrl) GetClassNameW(ctrl, cls, 32);
+                bool isEdit = (_wcsicmp(cls, L"Edit") == 0);
+                SetTextColor(hdc, kTextColor);
+                SetBkMode(hdc, OPAQUE);
+                SetBkColor(hdc, isEdit ? kCtrlBgColor : kBgColor);
+                return reinterpret_cast<LRESULT>(isEdit && d->ctrlBgBrush ? d->ctrlBgBrush : d->bgBrush);
+            }
+            if ((m == WM_CTLCOLOREDIT || m == WM_CTLCOLORLISTBOX) && d->ctrlBgBrush) {
+                HDC hdc = reinterpret_cast<HDC>(w);
+                SetTextColor(hdc, kTextColor);
+                SetBkMode(hdc, OPAQUE);
+                SetBkColor(hdc, kCtrlBgColor);
+                return reinterpret_cast<LRESULT>(d->ctrlBgBrush);
+            }
+        }
         if (m == WM_CLOSE) {
             DestroyWindow(h);
             return 0;
@@ -60,6 +100,8 @@ struct ModalDialog {
     bool create(HWND own, const wchar_t* title, int w, int h) {
         owner = own;
         scale = dialogDpiScale(owner);
+        bgBrush = CreateSolidBrush(kBgColor);
+        ctrlBgBrush = CreateSolidBrush(kCtrlBgColor);
         static bool reg = false;
         const wchar_t* cls = L"ReelModalDialog";
         if (!reg) {
@@ -68,7 +110,7 @@ struct ModalDialog {
             wc.lpfnWndProc = &ModalDialog::proc;
             wc.hInstance = GetModuleHandleW(nullptr);
             wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+            wc.hbrBackground = nullptr;
             wc.lpszClassName = cls;
             RegisterClassExW(&wc);
             reg = true;
@@ -96,6 +138,19 @@ struct ModalDialog {
         EnumChildWindows(hwnd, [](HWND c, LPARAM lp) -> BOOL {
             auto* sc = reinterpret_cast<ScaleCtx*>(lp);
             SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(sc->font), TRUE);
+            wchar_t cls[32] = {};
+            GetClassNameW(c, cls, 32);
+            if (_wcsicmp(cls, L"Button") == 0) {
+                LONG st = GetWindowLongW(c, GWL_STYLE) & BS_TYPEMASK;
+                if (st == BS_CHECKBOX || st == BS_AUTOCHECKBOX || st == BS_3STATE || st == BS_AUTO3STATE ||
+                    st == BS_RADIOBUTTON || st == BS_AUTORADIOBUTTON) {
+                    SetWindowTheme(c, L"", L"");
+                } else {
+                    SetWindowTheme(c, L"DarkMode_Explorer", nullptr);
+                }
+            } else {
+                SetWindowTheme(c, L"DarkMode_Explorer", nullptr);
+            }
             if (std::abs(sc->scale - 1.0f) > 0.01f) {
                 RECT r{};
                 GetWindowRect(c, &r);
@@ -118,6 +173,11 @@ struct ModalDialog {
         UpdateWindow(hwnd);
         MSG msg{};
         while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            if (keyCaptureHwnd && GetFocus() == keyCaptureHwnd &&
+                (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
+                SendMessageW(keyCaptureHwnd, msg.message, msg.wParam, msg.lParam);
+                continue;
+            }
             if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
                 DestroyWindow(hwnd);
                 break;
@@ -631,12 +691,149 @@ void Dialogs::showMessages(HWND owner, LogBuffer& log) {
     dlg.runModal();
 }
 
+static bool showHotkeyEditor(HWND owner, std::map<std::string, std::string>& overrides) {
+    ModalDialog dlg;
+    if (!dlg.create(owner, L"Configure Hotkeys", 560, 440)) return false;
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+    const auto& actions = HotkeyActions::all();
+    std::map<std::string, std::string> draft = overrides;
+
+    auto defaultJoined = [](const HotkeyAction& a) {
+        std::string out;
+        for (size_t i = 0; i < a.defaultGestures.size(); ++i) {
+            if (i) out += "|";
+            out += a.defaultGestures[i];
+        }
+        return out;
+    };
+    auto currentJoined = [&](const HotkeyAction& a) {
+        auto it = draft.find(a.id);
+        return it != draft.end() ? it->second : defaultJoined(a);
+    };
+
+    CreateWindowW(L"STATIC", L"Select an action, click the shortcut box, and press a key combo (Backspace to clear):",
+                  WS_CHILD | WS_VISIBLE, 14, 12, 520, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_USETABSTOPS | WS_TABSTOP,
+        14, 38, 518, 250, dlg.hwnd, reinterpret_cast<HMENU>(101), hi, nullptr);
+    INT tabStop = 190;
+    SendMessageW(list, LB_SETTABSTOPS, 1, reinterpret_cast<LPARAM>(&tabStop));
+
+    CreateWindowW(L"STATIC", L"Shortcut:", WS_CHILD | WS_VISIBLE, 14, 304, 70, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND capture = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL | WS_TABSTOP,
+        88, 300, 240, 26, dlg.hwnd, reinterpret_cast<HMENU>(102), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Reset Action", WS_CHILD | WS_VISIBLE, 336, 299, 96, 28, dlg.hwnd, reinterpret_cast<HMENU>(103), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Reset All", WS_CHILD | WS_VISIBLE, 438, 299, 94, 28, dlg.hwnd, reinterpret_cast<HMENU>(104), hi, nullptr);
+
+    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 354, 352, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 446, 352, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
+
+    auto refreshList = [&](int selIdx) {
+        SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        for (const auto& a : actions) {
+            std::string g = currentJoined(a);
+            std::wstring row = toWide(a.description) + L"\t" + (g.empty() ? L"(none)" : toWide(g));
+            SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
+        }
+        if (selIdx >= 0 && selIdx < static_cast<int>(actions.size()))
+            SendMessageW(list, LB_SETCURSEL, selIdx, 0);
+        SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(list, nullptr, TRUE);
+    };
+    auto syncCapture = [&]() {
+        int sel = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+        if (sel >= 0 && sel < static_cast<int>(actions.size())) {
+            std::string g = currentJoined(actions[sel]);
+            SetWindowTextW(capture, g.empty() ? L"(none)" : toWide(g).c_str());
+        } else {
+            SetWindowTextW(capture, L"");
+        }
+    };
+    refreshList(0);
+    syncCapture();
+
+    struct CaptureCtx {
+        std::function<void(UINT, bool, bool, bool)> onKey;
+        WNDPROC origProc = nullptr;
+    };
+    CaptureCtx capCtx;
+    capCtx.onKey = [&](UINT vk, bool ctrl, bool alt, bool shift) {
+        int sel = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+        if (sel < 0 || sel >= static_cast<int>(actions.size())) return;
+        const auto& act = actions[sel];
+        if ((vk == VK_BACK || vk == VK_DELETE) && !ctrl && !alt && !shift) {
+            draft[act.id] = "";
+            refreshList(sel);
+            syncCapture();
+            return;
+        }
+        if (auto g = HotkeyMap::gestureFromVk(vk, ctrl, alt, shift, false)) {
+            if (*g == defaultJoined(act)) draft.erase(act.id);
+            else draft[act.id] = *g;
+            refreshList(sel);
+            syncCapture();
+        }
+    };
+    SetWindowLongPtrW(capture, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&capCtx));
+    capCtx.origProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(capture, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(+[](HWND h, UINT m, WPARAM w, LPARAM l) -> LRESULT {
+            auto* ctx = reinterpret_cast<CaptureCtx*>(GetWindowLongPtrW(h, GWLP_USERDATA));
+            if (ctx && (m == WM_KEYDOWN || m == WM_SYSKEYDOWN)) {
+                UINT vk = static_cast<UINT>(w);
+                if (vk != VK_CONTROL && vk != VK_SHIFT && vk != VK_MENU && vk != VK_LWIN && vk != VK_RWIN) {
+                    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                    bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                    bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    ctx->onKey(vk, ctrl, alt, shift);
+                }
+                return 0;
+            }
+            return ctx && ctx->origProc ? CallWindowProcW(ctx->origProc, h, m, w, l) : DefWindowProcW(h, m, w, l);
+        })));
+    dlg.keyCaptureHwnd = capture;
+
+    dlg.handler = [&](HWND h, UINT m, WPARAM w, LPARAM) -> LRESULT {
+        if (m == WM_COMMAND) {
+            int id = LOWORD(w);
+            if (id == 101 && HIWORD(w) == LBN_SELCHANGE) { syncCapture(); return 0; }
+            if (id == 103) {
+                int sel = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+                if (sel >= 0 && sel < static_cast<int>(actions.size())) {
+                    draft.erase(actions[sel].id);
+                    refreshList(sel);
+                    syncCapture();
+                }
+                return 0;
+            }
+            if (id == 104) {
+                int sel = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+                draft.clear();
+                refreshList(sel >= 0 ? sel : 0);
+                syncCapture();
+                return 0;
+            }
+            if (id == IDOK) {
+                overrides = std::move(draft);
+                dlg.accepted = true;
+                DestroyWindow(h);
+                return 0;
+            }
+            if (id == IDCANCEL) { DestroyWindow(h); return 0; }
+        }
+        return -1;
+    };
+    return dlg.runModal();
+}
+
 bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRestartRequired) {
     outRestartRequired = false;
     ModalDialog dlg;
-    if (!dlg.create(owner, L"Preferences", 500, 430)) return false;
+    if (!dlg.create(owner, L"Preferences", 510, 485)) return false;
     HINSTANCE hi = GetModuleHandleW(nullptr);
     auto& s = settings.current();
+    auto pendingHotkeys = s.hotkeys;
 
     CreateWindowW(L"STATIC", L"Theme:", WS_CHILD | WS_VISIBLE, 16, 18, 90, 20, dlg.hwnd, nullptr, hi, nullptr);
     HWND themeBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 110, 14, 140, 120, dlg.hwnd, reinterpret_cast<HMENU>(101), hi, nullptr);
@@ -646,31 +843,54 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
     SendMessageW(themeBox, CB_SETCURSEL, s.theme == L"Light" ? 1 : (s.theme == L"System" ? 2 : 0), 0);
 
     auto mkChk = [&](int y, const wchar_t* text, int id, bool val) {
-        HWND c = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 16, y, 450, 22, dlg.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hi, nullptr);
+        HWND c = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 16, y, 460, 22, dlg.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hi, nullptr);
         SendMessageW(c, BM_SETCHECK, val ? BST_CHECKED : BST_UNCHECKED, 0);
         return c;
     };
-    HWND cOne = mkChk(48, L"Allow only one instance (restart required)", 201, s.oneInstance);
-    HWND cRes = mkChk(74, L"Continue playback where I left off (files > 5 min)", 203, s.resumePlayback);
-    HWND cMin = mkChk(100, L"Pause playback when minimized", 204, s.pauseOnMinimize);
-    HWND cAdv = mkChk(126, L"Step to next/previous media file in the same folder", 205, s.autoAdvanceFolder);
-    HWND cFs  = mkChk(152, L"Start in fullscreen", 206, s.startFullscreen);
-    HWND cHw  = mkChk(184, L"Hardware-accelerated decoding (DXVA2 / D3D11, restart required)", 207, s.hardwareDecoding);
-    HWND cSub = mkChk(210, L"Automatically load subtitle files next to the video", 208, s.autoLoadSubtitles);
+    HWND cOne  = mkChk(48,  L"Allow only one instance (restart required)", 201, s.oneInstance);
+    HWND cRes  = mkChk(74,  L"Continue playback where I left off (files > 5 min)", 203, s.resumePlayback);
+    HWND cMin  = mkChk(100, L"Pause playback when minimized", 204, s.pauseOnMinimize);
+    HWND cAdv  = mkChk(126, L"Step to next/previous media file in the same folder", 205, s.autoAdvanceFolder);
+    HWND cFs   = mkChk(152, L"Start in fullscreen", 206, s.startFullscreen);
+    HWND cSub  = mkChk(178, L"Automatically load subtitle files next to the video", 208, s.autoLoadSubtitles);
+    HWND cFast = mkChk(204, L"Fast keyframe seeking while scrubbing (restart required)", 210, s.fastSeek);
 
-    CreateWindowW(L"STATIC", L"Snapshot format:", WS_CHILD | WS_VISIBLE, 16, 268, 110, 20, dlg.hwnd, nullptr, hi, nullptr);
-    HWND fmtBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 130, 264, 90, 90, dlg.hwnd, reinterpret_cast<HMENU>(209), hi, nullptr);
+    CreateWindowW(L"STATIC", L"Hardware decode:", WS_CHILD | WS_VISIBLE, 16, 240, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND hwBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 236, 130, 140, dlg.hwnd, reinterpret_cast<HMENU>(207), hi, nullptr);
+    SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Auto"));
+    SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"D3D11"));
+    SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"DXVA2"));
+    SendMessageW(hwBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Off"));
+    int hwIdx = (s.hwDecodeMode == L"D3D11") ? 1 : (s.hwDecodeMode == L"DXVA2" ? 2 : ((!s.hardwareDecoding || s.hwDecodeMode == L"Off") ? 3 : 0));
+    SendMessageW(hwBox, CB_SETCURSEL, hwIdx, 0);
+
+    CreateWindowW(L"STATIC", L"Caching profile:", WS_CHILD | WS_VISIBLE, 16, 274, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND cacheBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 270, 260, 140, dlg.hwnd, reinterpret_cast<HMENU>(211), hi, nullptr);
+    SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Low latency (150 / 500 ms)"));
+    SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Balanced (300 / 1000 ms)"));
+    SendMessageW(cacheBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"High buffer (600 / 2500 ms)"));
+    int cacheIdx = (s.fileCachingMs <= 200) ? 0 : (s.fileCachingMs >= 500 ? 2 : 1);
+    SendMessageW(cacheBox, CB_SETCURSEL, cacheIdx, 0);
+
+    CreateWindowW(L"STATIC", L"Snapshot format:", WS_CHILD | WS_VISIBLE, 16, 310, 122, 20, dlg.hwnd, nullptr, hi, nullptr);
+    HWND fmtBox = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 144, 306, 90, 90, dlg.hwnd, reinterpret_cast<HMENU>(209), hi, nullptr);
     SendMessageW(fmtBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"png"));
     SendMessageW(fmtBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"jpg"));
     SendMessageW(fmtBox, CB_SETCURSEL, s.snapshotFormat == L"jpg" ? 1 : 0, 0);
 
-    CreateWindowW(L"BUTTON", L"Register File Associations...", WS_CHILD | WS_VISIBLE, 16, 304, 190, 28, dlg.hwnd, reinterpret_cast<HMENU>(301), hi, nullptr);
-    CreateWindowW(L"BUTTON", L"Remove Registration", WS_CHILD | WS_VISIBLE, 216, 304, 150, 28, dlg.hwnd, reinterpret_cast<HMENU>(302), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Configure Hotkeys...", WS_CHILD | WS_VISIBLE, 248, 304, 156, 28, dlg.hwnd, reinterpret_cast<HMENU>(303), hi, nullptr);
 
-    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 294, 352, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
-    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 388, 352, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Register File Associations...", WS_CHILD | WS_VISIBLE, 16, 350, 196, 28, dlg.hwnd, reinterpret_cast<HMENU>(301), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Remove Registration", WS_CHILD | WS_VISIBLE, 222, 350, 156, 28, dlg.hwnd, reinterpret_cast<HMENU>(302), hi, nullptr);
+
+    CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 304, 404, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+    CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 398, 404, 86, 28, dlg.hwnd, reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
 
     dlg.handler = [&](HWND h, UINT m, WPARAM w, LPARAM) -> LRESULT {
+        if (m == WM_COMMAND && LOWORD(w) == 303) {
+            showHotkeyEditor(h, pendingHotkeys);
+            return 0;
+        }
         if (m == WM_COMMAND && LOWORD(w) == 301) {
             WinInterop::registerFileAssociations();
             WinInterop::openDefaultAppsSettings();
@@ -691,9 +911,20 @@ bool Dialogs::showPreferences(HWND owner, SettingsService& settings, bool& outRe
             s.pauseOnMinimize = SendMessageW(cMin, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.autoAdvanceFolder = SendMessageW(cAdv, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.startFullscreen = SendMessageW(cFs, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            s.hardwareDecoding = SendMessageW(cHw, BM_GETCHECK, 0, 0) == BST_CHECKED;
             s.autoLoadSubtitles = SendMessageW(cSub, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            s.fastSeek = SendMessageW(cFast, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+            int hwi = static_cast<int>(SendMessageW(hwBox, CB_GETCURSEL, 0, 0));
+            s.hwDecodeMode = (hwi == 1) ? L"D3D11" : (hwi == 2 ? L"DXVA2" : (hwi == 3 ? L"Off" : L"Auto"));
+            s.hardwareDecoding = (s.hwDecodeMode != L"Off");
+
+            int ci = static_cast<int>(SendMessageW(cacheBox, CB_GETCURSEL, 0, 0));
+            if (ci == 0) { s.fileCachingMs = 150; s.networkCachingMs = 500; }
+            else if (ci == 2) { s.fileCachingMs = 600; s.networkCachingMs = 2500; }
+            else { s.fileCachingMs = 300; s.networkCachingMs = 1000; }
+
             s.snapshotFormat = SendMessageW(fmtBox, CB_GETCURSEL, 0, 0) == 1 ? L"jpg" : L"png";
+            s.hotkeys = std::move(pendingHotkeys);
             outRestartRequired = (beforeOpts != PlayerService::buildOptions(s)) || (s.oneInstance != beforeOne);
             dlg.accepted = true;
             DestroyWindow(h);

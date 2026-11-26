@@ -23,7 +23,7 @@ DefaultGroupName=Reel Player
 UninstallDisplayIcon={app}\{#AppExe}
 OutputDir=..\dist
 OutputBaseFilename=ReelPlayer-Setup-{#Arch}
-SetupIconFile=..\src\ReelPlayer.App\Assets\app.ico
+SetupIconFile=..\cpp\resources\app.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -62,7 +62,7 @@ Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\shell\open\command";
   #define Ext Copy(Exts, 1, Pos(" ", Exts + " ") - 1)
 Root: HKA; Subkey: "Software\Classes\.{#Ext}\OpenWithProgids"; ValueType: none; ValueName: "{#ProgId}"; Flags: uninsdeletevalue; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".{#Ext}"; ValueData: ""; Tasks: associate
-  #define Exts Copy(Exts, Pos(" ", Exts + " ") + 1, 999)
+  #define public Exts Copy(Exts, Pos(" ", Exts + " ") + 1, 999)
 #endsub
 #for {0; Len(Exts) > 0; 0} AddExt
 

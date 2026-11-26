@@ -79,7 +79,7 @@ struct MediaStatsInfo {
 
 class PlayerService {
 public:
-    explicit PlayerService(const std::vector<std::string>& libVlcOptions);
+    explicit PlayerService(const std::vector<std::string>& libVlcOptions, bool asyncInit = false);
     ~PlayerService();
 
     PlayerService(const PlayerService&) = delete;
@@ -95,6 +95,7 @@ public:
     void setHwnd(HWND hwnd);
 
     // Events (raised on libVLC/worker threads; UI must PostMessage to marshal)
+    std::function<void(std::wstring)> onInitFailed;
     std::function<void()> onOpening;
     std::function<void()> onStateChanged;
     std::function<void()> onEndReached;
@@ -124,7 +125,7 @@ public:
     void stopKeepItem();
     void pause();
     void resume();
-    void setTimeMs(int64_t ms);
+    void setTimeMs(int64_t ms, bool asyncCoalesced = false);
     void nextFrame();
     void setVolume(int vol);
     void setMute(bool mute);
@@ -166,6 +167,7 @@ public:
     std::wstring meta(libvlc_meta_t type) const;
     std::vector<MediaTrackInfo> mediaTracks() const;
     MediaStatsInfo mediaStats() const;
+    double videoFps() const;
 
     // Engine rebuild for transform/sharpen video filters
     std::future<bool> rebuildAsync(const std::vector<std::string>& extraOptions);
@@ -192,6 +194,7 @@ private:
     std::atomic<libvlc_media_player_t*> _mp{ nullptr };
     std::atomic<libvlc_media_t*> _media{ nullptr };
     std::atomic<HWND> _hwnd{ nullptr };
+    std::atomic<int64_t> _pendingSeekMs{ -1 };
     libvlc_equalizer_t* _eq = nullptr;
 
     std::vector<EnginePair> _retired;

@@ -68,11 +68,11 @@ target_link_libraries(ReelPlayer PRIVATE
 )
 
 if(MINGW)
-    set(COMMON_FLAGS -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+    set(COMMON_FLAGS -O3 -flto=auto -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
     target_compile_options(reelplayer_core PRIVATE ${COMMON_FLAGS})
     target_compile_options(ReelPlayer PRIVATE ${COMMON_FLAGS})
     # Statically link MinGW C++/GCC/winpthread runtimes so ReelPlayer.exe has zero extra DLL dependencies.
-    target_link_options(ReelPlayer PRIVATE -s -municode -static-libgcc -static-libstdc++ -Wl,--gc-sections)
+    target_link_options(ReelPlayer PRIVATE -O3 -flto=auto -s -municode -static-libgcc -static-libstdc++ -Wl,--gc-sections)
     target_link_libraries(ReelPlayer PRIVATE -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
 endif()
 
@@ -81,7 +81,7 @@ enable_testing()
 add_executable(ReelPlayerCoreTests tests/CoreTests.cpp)
 target_link_libraries(ReelPlayerCoreTests PRIVATE reelplayer_core)
 if(MINGW)
-    target_compile_options(ReelPlayerCoreTests PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
-    target_link_options(ReelPlayerCoreTests PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
+    target_compile_options(ReelPlayerCoreTests PRIVATE -O2 -flto=auto -Wall -Wextra -Wno-unused-parameter)
+    target_link_options(ReelPlayerCoreTests PRIVATE -flto=auto -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
 endif()
 add_test(NAME CoreTests COMMAND ReelPlayerCoreTests)

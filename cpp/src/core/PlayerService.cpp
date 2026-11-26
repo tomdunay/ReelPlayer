@@ -53,16 +53,27 @@ static int parseHexColor(const std::wstring& hex) {
 }
 
 std::vector<std::string> PlayerService::buildOptions(const AppSettings& s) {
+    std::string hw = "any";
+    if (!s.hardwareDecoding || s.hwDecodeMode == L"Off") hw = "none";
+    else if (s.hwDecodeMode == L"D3D11") hw = "d3d11va";
+    else if (s.hwDecodeMode == L"DXVA2") hw = "dxva2";
+
+    int fileCache = std::clamp(s.fileCachingMs, 50, 10000);
+    int netCache = std::clamp(s.networkCachingMs, 100, 30000);
+
     std::vector<std::string> opts = {
         "--no-video-title-show",
         "--no-snapshot-preview",
         "--no-stats",
-        std::string("--avcodec-hw=") + (s.hardwareDecoding ? "any" : "none"),
+        "--avcodec-hw=" + hw,
+        "--file-caching=" + std::to_string(fileCache),
+        "--network-caching=" + std::to_string(netCache),
         std::string("--snapshot-format=") + (s.snapshotFormat == L"jpg" ? "jpg" : "png"),
         "--freetype-rel-fontsize=" + std::to_string(SettingsService::subtitleSizeToVlc(s.subtitleSize)),
         "--freetype-outline-thickness=" + std::to_string(SettingsService::subtitleOutlineToVlc(s.subtitleOutline)),
         "--freetype-color=" + std::to_string(parseHexColor(s.subtitleColor)),
     };
+    if (s.fastSeek) opts.push_back("--input-fast-seek");
     auto lang = trim(s.subtitleLanguage);
     if (!lang.empty()) opts.push_back("--sub-language=" + toUtf8(lang));
     auto enc = trim(s.subtitleEncoding);
@@ -185,12 +196,25 @@ PlayerService::EnginePair PlayerService::createEngine(const std::vector<std::str
     return EnginePair{ lib, mp, nullptr };
 }
 
-PlayerService::PlayerService(const std::vector<std::string>& libVlcOptions)
+PlayerService::PlayerService(const std::vector<std::string>& libVlcOptions, bool asyncInit)
     : _baseOptions(libVlcOptions) {
-    auto pair = createEngine(_baseOptions);
-    _lib.store(pair.lib);
-    _mp.store(pair.mp);
-    _worker = std::thread(&PlayerService::workLoop, this);
+    if (asyncInit) {
+        _worker = std::thread(&PlayerService::workLoop, this);
+        post([this] {
+            try {
+                auto pair = createEngine(_baseOptions);
+                _lib.store(pair.lib);
+                _mp.store(pair.mp);
+            } catch (const std::exception& ex) {
+                if (onInitFailed) onInitFailed(toWide(ex.what()));
+            }
+        });
+    } else {
+        auto pair = createEngine(_baseOptions);
+        _lib.store(pair.lib);
+        _mp.store(pair.mp);
+        _worker = std::thread(&PlayerService::workLoop, this);
+    }
 }
 
 PlayerService::~PlayerService() {
@@ -351,7 +375,20 @@ void PlayerService::resume() {
     });
 }
 
-void PlayerService::setTimeMs(int64_t ms) {
+void PlayerService::setTimeMs(int64_t ms, bool asyncCoalesced) {
+    if (asyncCoalesced) {
+        bool alreadyPending = (_pendingSeekMs.exchange(ms) >= 0);
+        if (!alreadyPending) {
+            post([this] {
+                int64_t target = _pendingSeekMs.exchange(-1);
+                if (target >= 0) {
+                    if (auto* mp = _mp.load()) libvlc_media_player_set_time(mp, target);
+                }
+            });
+        }
+        return;
+    }
+    _pendingSeekMs.store(-1);
     if (auto* mp = _mp.load()) libvlc_media_player_set_time(mp, ms);
 }
 
@@ -584,6 +621,23 @@ std::vector<MediaTrackInfo> PlayerService::mediaTracks() const {
     }
     if (tracks) libvlc_media_tracks_release(tracks, count);
     return out;
+}
+
+double PlayerService::videoFps() const {
+    auto* m = _media.load();
+    if (!m) return 0.0;
+    libvlc_media_track_t** tracks = nullptr;
+    unsigned count = libvlc_media_tracks_get(m, &tracks);
+    double fps = 0.0;
+    for (unsigned i = 0; i < count; ++i) {
+        if (tracks[i]->i_type == libvlc_track_video && tracks[i]->video &&
+            tracks[i]->video->i_frame_rate_den > 0 && tracks[i]->video->i_frame_rate_num > 0) {
+            fps = static_cast<double>(tracks[i]->video->i_frame_rate_num) / tracks[i]->video->i_frame_rate_den;
+            break;
+        }
+    }
+    if (tracks) libvlc_media_tracks_release(tracks, count);
+    return (fps >= 1.0 && fps <= 240.0) ? fps : 0.0;
 }
 
 MediaStatsInfo PlayerService::mediaStats() const {

@@ -54,11 +54,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     setupLibVlcDllPath();
 
-    // 3. Kick off libVLC + ResumeStore + log pruning on background threads in parallel with Win32/D2D init!
+    // 3. Start libVLC init asynchronously on PlayerService's worker thread so the window paints in < 25 ms!
     auto vlcOpts = reel::PlayerService::buildOptions(settings.current());
-    auto engineFut = std::async(std::launch::async, [opts = std::move(vlcOpts)]() {
-        return std::make_unique<reel::PlayerService>(opts);
-    });
+    auto engine = std::make_unique<reel::PlayerService>(vlcOpts, true);
     auto resumeFut = std::async(std::launch::async, []() {
         return std::make_unique<reel::ResumeStore>();
     });
@@ -70,19 +68,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     reel::D2DContext d2d;
     if (!d2d.init()) {
         MessageBoxW(nullptr, L"Could not initialize Direct2D / DirectWrite.", L"Reel Player", MB_OK | MB_ICONERROR);
-        CoUninitialize();
-        return 1;
-    }
-
-    std::unique_ptr<reel::PlayerService> engine;
-    try {
-        engine = engineFut.get();
-    } catch (const std::exception& ex) {
-        reel::AppLog::write(L"[libVLC init] " + reel::toWide(ex.what()));
-        MessageBoxW(nullptr,
-            L"Reel Player could not start its playback engine (libVLC).\n\nMake sure the 'libvlc\\win-x64' folder is next to ReelPlayer.exe.",
-            L"Reel Player", MB_OK | MB_ICONERROR);
-        d2d.shutdown();
         CoUninitialize();
         return 1;
     }

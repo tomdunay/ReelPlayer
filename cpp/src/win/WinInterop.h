@@ -18,6 +18,7 @@ public:
     static void keepAwake(bool on);
     static void setAppDarkMode(bool dark);
     static void setDarkTitleBar(HWND hwnd, bool dark);
+    static void setWindowRoundedAndBackdrop(HWND hwnd, bool acrylic);
     static bool systemUsesLightTheme();
     static void blackenVlcWindows(HWND topLevel);
 

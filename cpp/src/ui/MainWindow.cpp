@@ -21,9 +21,9 @@ constexpr UINT_PTR TimerFsHideId = 3;
 // Static menu command IDs
 enum CmdId : UINT {
     ID_OPEN_FILE = 1001, ID_OPEN_MULTI, ID_OPEN_FOLDER, ID_OPEN_DISC, ID_OPEN_NETWORK, ID_OPEN_CAPTURE, ID_SAVE_PLAYLIST, ID_QUIT,
-    ID_SEEK_FWD10, ID_SEEK_BACK10, ID_JUMP_TIME, ID_RECORD, ID_AB_LOOP, ID_PLAY_PAUSE, ID_STOP, ID_PREV, ID_NEXT, ID_NEXT_FRAME,
+    ID_SEEK_FWD10, ID_SEEK_BACK10, ID_JUMP_TIME, ID_RECORD, ID_AB_LOOP, ID_EXPORT_AB, ID_PLAY_PAUSE, ID_STOP, ID_PREV, ID_NEXT, ID_NEXT_FRAME, ID_PREV_FRAME,
     ID_VOL_UP, ID_VOL_DOWN, ID_MUTE,
-    ID_FULLSCREEN, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
+    ID_FULLSCREEN, ID_MINI_PLAYER, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
     ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP,
     ID_EFFECTS, ID_SYNC, ID_MEDIA_INFO, ID_CODEC_INFO, ID_MESSAGES, ID_PREFERENCES,
     ID_TOGGLE_PLAYLIST, ID_MINIMAL, ID_TOGGLE_STATUSBAR,
@@ -164,13 +164,18 @@ bool MainWindow::create() {
     auto makeBarCallbacks = [this]() -> ControlBarCallbacks {
         return {
             [this](const char* act) { runAction(act); },
-            [this](int64_t ms) { seek(ms); },
+            [this](int64_t ms, bool dragging) { seek(ms, dragging); },
             [this](bool seeking) { _isUserSeeking = seeking; },
             [this](int vol) { setVolume(vol); },
             [this] {
                 _settings.current().showRemainingTime = !_settings.current().showRemainingTime;
                 pushControlBarState();
-            }
+            },
+            [this](const char* act) -> std::wstring {
+                auto g = _hotkeys.gesturesFor(act);
+                return g.empty() ? L"" : toWide(g[0]);
+            },
+            [this] { ensureAnimTimer(); }
         };
     };
 
@@ -186,6 +191,11 @@ bool MainWindow::create() {
     _overlay->create(_hwnd, _hInst);
 
     // Wire libVLC callbacks (marshal to UI thread via PostMessage)
+    _engine.onInitFailed = [this](std::wstring err) {
+        AppLog::write(L"[libVLC init] " + err);
+        auto* msg = new std::wstring(L"Engine init failed: " + err);
+        if (!PostMessageW(_hwnd, WM_APP_OSD_MSG, 0, reinterpret_cast<LPARAM>(msg))) delete msg;
+    };
     _engine.onOpening = [this] { postVlcEvent({ VlcEventKind::Opening }); };
     _engine.onStateChanged = [this] { postVlcEvent({ VlcEventKind::StateChanged }); };
     _engine.onEndReached = [this] { postVlcEvent({ VlcEventKind::EndReached }); };
@@ -205,7 +215,6 @@ bool MainWindow::create() {
     if (s.alwaysOnTop) SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
     SetTimer(_hwnd, TimerTickId, 250, nullptr);
-    SetTimer(_hwnd, TimerAnimId, 33, nullptr);
     layoutChildren();
     pushControlBarState();
     return true;
@@ -272,12 +281,14 @@ void MainWindow::buildMenus() {
     addSep(mPlay);
     addItem(mPlay, ID_RECORD, L"&Record");
     addItem(mPlay, ID_AB_LOOP, L"A-B &Loop\tShift+L");
+    addItem(mPlay, ID_EXPORT_AB, L"Export A-B &Clip...\tCtrl+Shift+E");
     addSep(mPlay);
     addItem(mPlay, ID_PLAY_PAUSE, L"&Play / Pause\tSpace");
     addItem(mPlay, ID_STOP, L"&Stop\tS");
     addItem(mPlay, ID_PREV, L"Pre&vious\tP");
     addItem(mPlay, ID_NEXT, L"Ne&xt\tN");
     addItem(mPlay, ID_NEXT_FRAME, L"Next &Frame\tE");
+    addItem(mPlay, ID_PREV_FRAME, L"Pre&vious Frame\tShift+E");
 
     HMENU mAudio = addSub(_mainMenu, L"&Audio");
     _dynAudioTrack = addSub(mAudio, L"Audio &Track");
@@ -321,6 +332,7 @@ void MainWindow::buildMenus() {
     addItem(mTools, ID_PREFERENCES, L"&Preferences...\tCtrl+P");
 
     HMENU mView = addSub(_mainMenu, L"V&iew");
+    addItem(mView, ID_MINI_PLAYER, L"&Picture-in-Picture\tCtrl+Shift+P");
     addItem(mView, ID_MINIMAL, L"&Minimal Interface\tCtrl+H");
     addItem(mView, ID_FULLSCREEN, L"&Fullscreen Interface\tF");
 
@@ -400,13 +412,15 @@ void MainWindow::refreshMenuStates() {
     bool active = _engine.isActive();
 
     chk(ID_FULLSCREEN, _isFullscreen);
+    chk(ID_MINI_PLAYER, _isMiniPlayer);
     chk(ID_ALWAYS_ON_TOP, _settings.current().alwaysOnTop);
     chk(ID_MINIMAL, _isMinimal);
     chk(ID_RECORD, _isRecording);
     chk(ID_AB_LOOP, _abStartMs.has_value());
     chk(ID_MUTE, _muted);
 
-    for (UINT id : { ID_RECORD, ID_SNAPSHOT, ID_NEXT_FRAME, ID_JUMP_TIME, ID_SEEK_FWD10, ID_SEEK_BACK10, ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP, ID_STOP })
+    en(ID_EXPORT_AB, _abStartMs.has_value() && _abEndMs.has_value());
+    for (UINT id : { ID_RECORD, ID_SNAPSHOT, ID_NEXT_FRAME, ID_PREV_FRAME, ID_JUMP_TIME, ID_SEEK_FWD10, ID_SEEK_BACK10, ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP, ID_STOP })
         en(id, active);
 }
 
@@ -441,6 +455,7 @@ void MainWindow::showContextMenu(int screenX, int screenY) {
 
     AppendMenuW(cm, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(cm, MF_STRING | (_isFullscreen ? MF_CHECKED : 0), ID_FULLSCREEN, L"Fullscreen\tF");
+    AppendMenuW(cm, MF_STRING | (_isMiniPlayer ? MF_CHECKED : 0), ID_MINI_PLAYER, L"Picture-in-Picture\tCtrl+Shift+P");
     AppendMenuW(cm, MF_STRING | (_hasVideo ? 0 : MF_GRAYED), ID_SNAPSHOT, L"Take Snapshot\tShift+S");
     AppendMenuW(cm, MF_STRING, ID_ROTATE, L"Rotate 90°\tCtrl+R");
     AppendMenuW(cm, MF_STRING | (_abStartMs.has_value() ? MF_CHECKED : 0), ID_AB_LOOP, L"A-B Loop\tShift+L");
@@ -466,8 +481,8 @@ void MainWindow::layoutChildren() {
     float scale = GetDpiForWindow(_hwnd) / 96.0f;
     if (scale <= 0.0f) scale = 1.0f;
 
-    int menuH = (_isFullscreen || _isMinimal) ? 0 : static_cast<int>(std::lround(D2DMenuBar::BarHeight * scale));
-    int barH = _isFullscreen ? 0 : static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
+    int menuH = (_isFullscreen || _isMiniPlayer || _isMinimal) ? 0 : static_cast<int>(std::lround(D2DMenuBar::BarHeight * scale));
+    int barH = (_isFullscreen || _isMiniPlayer) ? 0 : static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
     int vidW = std::max<int>(1, w);
     int vidH = std::max<int>(1, h - menuH - barH);
 
@@ -480,7 +495,7 @@ void MainWindow::layoutChildren() {
         }
     }
     if (_dockedBar) {
-        if (_isFullscreen) ShowWindow(_dockedBar->hwnd(), SW_HIDE);
+        if (_isFullscreen || _isMiniPlayer) ShowWindow(_dockedBar->hwnd(), SW_HIDE);
         else {
             MoveWindow(_dockedBar->hwnd(), 0, menuH + vidH, w, barH, TRUE);
             ShowWindow(_dockedBar->hwnd(), SW_SHOW);
@@ -500,15 +515,17 @@ void MainWindow::syncOverlays() {
     GetWindowRect(_videoHost, &vr);
     if (_overlay) _overlay->syncToRect(vr);
 
-    if (_fullscreenBar && _isFullscreen && _fsBarVisible) {
+    if (_fullscreenBar && (_isFullscreen || _isMiniPlayer) && (_fsBarVisible || _fsBarAlpha > 1.0f)) {
         float scale = GetDpiForWindow(_hwnd) / 96.0f;
         if (scale <= 0.0f) scale = 1.0f;
         int vw = vr.right - vr.left;
         int barH = static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
-        int bw = std::min(static_cast<int>(960 * scale), std::max(static_cast<int>(460 * scale), vw - static_cast<int>(72 * scale)));
+        int bw = _isMiniPlayer
+            ? std::max(static_cast<int>(320 * scale), vw - static_cast<int>(16 * scale))
+            : std::min(static_cast<int>(960 * scale), std::max(static_cast<int>(460 * scale), vw - static_cast<int>(72 * scale)));
         int bx = vr.left + (vw - bw) / 2;
-        int by = vr.bottom - barH - static_cast<int>(22 * scale);
-        SetWindowPos(_fullscreenBar->hwnd(), HWND_TOP, bx, by, bw, barH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        int by = vr.bottom - barH - static_cast<int>((_isMiniPlayer ? 8 : 22) * scale);
+        SetWindowPos(_fullscreenBar->hwnd(), HWND_TOPMOST, bx, by, bw, barH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 }
 
@@ -535,6 +552,7 @@ void MainWindow::runAction(const std::string& action) {
     else if (action == "Next") nextItem();
     else if (action == "Previous") previousItem();
     else if (action == "NextFrame") { if (_engine.isActive()) _engine.nextFrame(); }
+    else if (action == "PrevFrame") previousFrame();
     else if (action == "SeekBack10") seekRelative(-10000);
     else if (action == "SeekFwd10") seekRelative(10000);
     else if (action == "SeekBack3") seekRelative(-3000);
@@ -557,6 +575,7 @@ void MainWindow::runAction(const std::string& action) {
         if (auto t = Dialogs::showJumpToTime(_hwnd, _engine.timeMs(), _engine.lengthMs())) seek(*t);
     } else if (action == "Record") toggleRecord();
     else if (action == "AbLoop") cycleAbLoop();
+    else if (action == "ExportAbClip") exportAbClip();
     else if (action == "CycleLoop") {
         auto next = _playlist.loop() == LoopMode::Off ? LoopMode::One : LoopMode::Off;
         _playlist.setLoop(next);
@@ -572,7 +591,11 @@ void MainWindow::runAction(const std::string& action) {
     else if (action == "AudioDelayDown") { int64_t ms = _engine.audioDelayUs() / 1000 - 50; _engine.setAudioDelayUs(ms * 1000); showOsd(L"Audio delay: " + std::to_wstring(ms) + L" ms"); }
     else if (action == "AudioDelayUp") { int64_t ms = _engine.audioDelayUs() / 1000 + 50; _engine.setAudioDelayUs(ms * 1000); showOsd(L"Audio delay: " + std::to_wstring(ms) + L" ms"); }
     else if (action == "Fullscreen") setFullscreen(!_isFullscreen);
-    else if (action == "ExitFullscreen") { if (_isFullscreen) setFullscreen(false); }
+    else if (action == "MiniPlayer") setMiniPlayer(!_isMiniPlayer);
+    else if (action == "ExitFullscreen") {
+        if (_isFullscreen) setFullscreen(false);
+        else if (_isMiniPlayer) setMiniPlayer(false);
+    }
     else if (action == "AlwaysOnTop") {
         bool on = !_settings.current().alwaysOnTop;
         _settings.current().alwaysOnTop = on;
@@ -790,13 +813,13 @@ bool MainWindow::tryPlaySibling(int offset) {
     return true;
 }
 
-void MainWindow::seek(int64_t ms) {
+void MainWindow::seek(int64_t ms, bool asyncCoalesced) {
     if (!_engine.isActive() || !_engine.isSeekable()) return;
     int64_t len = _engine.lengthMs();
     ms = std::max<int64_t>(0, len > 0 ? std::min<int64_t>(ms, len - 500) : ms);
-    _engine.setTimeMs(ms);
+    _engine.setTimeMs(ms, asyncCoalesced);
     _posMs = ms;
-    _smtc.updateTimeline(ms, len);
+    if (!asyncCoalesced) _smtc.updateTimeline(ms, len);
     pushControlBarState();
 }
 
@@ -862,6 +885,57 @@ void MainWindow::clearAbLoop(bool quiet) {
     _abEndMs.reset();
     if (!quiet) showOsd(L"A-B loop: off");
     pushControlBarState();
+}
+
+void MainWindow::previousFrame() {
+    if (!_engine.isActive() || !_engine.isSeekable()) return;
+    if (_isPlaying) _engine.pause();
+    double fps = _engine.videoFps();
+    int64_t stepMs = fps > 0.0 ? std::max<int64_t>(16, static_cast<int64_t>(std::lround(1000.0 / fps))) : 40;
+    int64_t target = std::max<int64_t>(0, _engine.timeMs() - stepMs);
+    seek(target);
+}
+
+void MainWindow::exportAbClip() {
+    if (!_abStartMs || !_abEndMs) { showOsd(L"Set both A and B points first (Shift+L)"); return; }
+    auto item = _engine.currentItem();
+    if (!item || !item->isFile()) { showOsd(L"Export A-B clip requires a local file"); return; }
+
+    int64_t startMs = *_abStartMs;
+    int64_t endMs = *_abEndMs;
+    fs::path src(item->location);
+    std::wstring aStr = TimeFormat::format(startMs); std::replace(aStr.begin(), aStr.end(), L':', L'.');
+    std::wstring bStr = TimeFormat::format(endMs);   std::replace(bStr.begin(), bStr.end(), L':', L'.');
+    fs::path dst = src.parent_path() / (src.stem().wstring() + L"-clip-" + aStr + L"-" + bStr + src.extension().wstring());
+
+    showOsd(L"Exporting clip...");
+    HWND hwnd = _hwnd;
+    std::wstring srcPath = src.wstring();
+    std::wstring dstPath = dst.wstring();
+    std::thread([hwnd, srcPath, dstPath, startMs, endMs] {
+        wchar_t ssBuf[32], toBuf[32];
+        std::swprintf(ssBuf, 32, L"%.3f", startMs / 1000.0);
+        std::swprintf(toBuf, 32, L"%.3f", endMs / 1000.0);
+        std::wstring cmd = L"ffmpeg -y -ss " + std::wstring(ssBuf) + L" -to " + std::wstring(toBuf) +
+                           L" -i \"" + srcPath + L"\" -c copy \"" + dstPath + L"\"";
+        STARTUPINFOW si{ sizeof(si) };
+        PROCESS_INFORMATION pi{};
+        BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        std::wstring* msg = nullptr;
+        if (ok) {
+            WaitForSingleObject(pi.hProcess, 60000);
+            DWORD code = 1;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            msg = new std::wstring(code == 0
+                ? (L"Clip saved: " + fs::path(dstPath).filename().wstring())
+                : L"Clip export failed (ffmpeg error)");
+        } else {
+            msg = new std::wstring(L"Install ffmpeg on PATH to export lossless A-B clips");
+        }
+        PostMessageW(hwnd, WM_APP_OSD_MSG, 0, reinterpret_cast<LPARAM>(msg));
+    }).detach();
 }
 
 void MainWindow::acceptResume() {
@@ -991,6 +1065,7 @@ void MainWindow::cycleSubtitleTrack() {
 
 void MainWindow::setFullscreen(bool on) {
     if (on == _isFullscreen) return;
+    if (on && _isMiniPlayer) setMiniPlayer(false);
     _isFullscreen = on;
     if (on) {
         _savedStyle = static_cast<DWORD>(GetWindowLongPtrW(_hwnd, GWL_STYLE));
@@ -1009,7 +1084,7 @@ void MainWindow::setFullscreen(bool on) {
         layoutChildren();
         showFullscreenBar();
     } else {
-        hideFullscreenBar();
+        hideFullscreenBar(true);
         if (_cursorHidden) { ShowCursor(TRUE); _cursorHidden = false; }
         SetWindowLongPtrW(_hwnd, GWL_STYLE, _savedStyle);
         SetWindowLongPtrW(_hwnd, GWL_EXSTYLE, _savedExStyle);
@@ -1033,22 +1108,107 @@ void MainWindow::setFullscreen(bool on) {
     pushControlBarState();
 }
 
+void MainWindow::setMiniPlayer(bool on) {
+    if (on == _isMiniPlayer) return;
+    if (on && _isFullscreen) setFullscreen(false);
+    _isMiniPlayer = on;
+    if (on) {
+        _savedStyle = static_cast<DWORD>(GetWindowLongPtrW(_hwnd, GWL_STYLE));
+        _savedExStyle = static_cast<DWORD>(GetWindowLongPtrW(_hwnd, GWL_EXSTYLE));
+        _savedPlacement.length = sizeof(WINDOWPLACEMENT);
+        GetWindowPlacement(_hwnd, &_savedPlacement);
+        _savedMaximized = IsZoomed(_hwnd) != 0;
+
+        SetWindowLongPtrW(_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_THICKFRAME | WS_CLIPCHILDREN);
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfoW(MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        float scale = GetDpiForWindow(_hwnd) / 96.0f;
+        if (scale <= 0.0f) scale = 1.0f;
+        int mw = static_cast<int>(std::lround(440 * scale));
+        int mh = static_cast<int>(std::lround(248 * scale));
+        int margin = static_cast<int>(std::lround(20 * scale));
+        SetWindowPos(_hwnd, HWND_TOPMOST,
+                     mi.rcWork.right - mw - margin, mi.rcWork.bottom - mh - margin,
+                     mw, mh, SWP_FRAMECHANGED);
+        layoutChildren();
+        showOsd(L"Picture-in-Picture (drag to move, Esc to exit)");
+    } else {
+        hideFullscreenBar(true);
+        SetWindowLongPtrW(_hwnd, GWL_STYLE, _savedStyle);
+        SetWindowLongPtrW(_hwnd, GWL_EXSTYLE, _savedExStyle);
+        HWND zOrder = _settings.current().alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
+        if (_savedMaximized) {
+            MONITORINFO mi{ sizeof(mi) };
+            GetMonitorInfoW(MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+            UINT dpi = GetDpiForWindow(_hwnd);
+            int border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            SetWindowPos(_hwnd, zOrder,
+                         mi.rcWork.left - border, mi.rcWork.top - border,
+                         (mi.rcWork.right - mi.rcWork.left) + border * 2,
+                         (mi.rcWork.bottom - mi.rcWork.top) + border * 2,
+                         SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        } else {
+            SetWindowPlacement(_hwnd, &_savedPlacement);
+            SetWindowPos(_hwnd, zOrder, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+        }
+        layoutChildren();
+    }
+    pushControlBarState();
+}
+
+void MainWindow::ensureAnimTimer() {
+    if (!_animTimerActive && _hwnd) {
+        SetTimer(_hwnd, TimerAnimId, 33, nullptr);
+        _animTimerActive = true;
+    }
+}
+
 void MainWindow::showFullscreenBar() {
-    if (!_isFullscreen || !_fullscreenBar) return;
+    if ((!_isFullscreen && !_isMiniPlayer) || !_fullscreenBar) return;
     _fsBarVisible = true;
+    _fsBarTargetAlpha = 242.0f;
     _fsLastMouseTick = GetTickCount64();
     if (_cursorHidden) { ShowCursor(TRUE); _cursorHidden = false; }
+    _fullscreenBar->setOpacity(static_cast<BYTE>(std::clamp(_fsBarAlpha, 1.0f, 242.0f)));
     syncOverlays();
+    ensureAnimTimer();
     SetTimer(_hwnd, TimerFsHideId, 3000, nullptr);
 }
 
-void MainWindow::hideFullscreenBar() {
+void MainWindow::hideFullscreenBar(bool immediate) {
     KillTimer(_hwnd, TimerFsHideId);
     _fsBarVisible = false;
-    if (_fullscreenBar) ShowWindow(_fullscreenBar->hwnd(), SW_HIDE);
+    _fsBarTargetAlpha = 0.0f;
+    if (immediate) {
+        _fsBarAlpha = 0.0f;
+        if (_fullscreenBar) {
+            _fullscreenBar->hidePopup();
+            ShowWindow(_fullscreenBar->hwnd(), SW_HIDE);
+        }
+    } else {
+        ensureAnimTimer();
+    }
     if (_isFullscreen && !_cursorHidden) {
         ShowCursor(FALSE);
         _cursorHidden = true;
+    }
+}
+
+void MainWindow::tickFsBarFade() {
+    if (!_fullscreenBar) return;
+    if (std::abs(_fsBarAlpha - _fsBarTargetAlpha) < 0.5f) return;
+    // ~140 ms fade-in, ~180 ms fade-out at 33 ms tick
+    float step = (_fsBarTargetAlpha > _fsBarAlpha) ? 56.0f : 44.0f;
+    if (_fsBarTargetAlpha > _fsBarAlpha)
+        _fsBarAlpha = std::min(_fsBarTargetAlpha, _fsBarAlpha + step);
+    else
+        _fsBarAlpha = std::max(_fsBarTargetAlpha, _fsBarAlpha - step);
+
+    if (_fsBarAlpha <= 1.0f && _fsBarTargetAlpha <= 0.0f) {
+        _fsBarAlpha = 0.0f;
+        ShowWindow(_fullscreenBar->hwnd(), SW_HIDE);
+    } else {
+        _fullscreenBar->setOpacity(static_cast<BYTE>(_fsBarAlpha));
     }
 }
 
@@ -1086,6 +1246,8 @@ void MainWindow::pushControlBarState() {
     st.rate = _rate;
     st.loop = _playlist.loop();
     st.isFullscreen = _isFullscreen;
+    st.isMiniPlayer = _isMiniPlayer;
+    if (auto cur = _playlist.current(); cur && cur->isFile()) st.mediaPath = cur->location;
     st.chapters = _chapters;
     st.abStartMs = _abStartMs;
     st.abEndMs = _abEndMs;
@@ -1099,8 +1261,8 @@ void MainWindow::pushControlBarState() {
     }
 }
 
-void MainWindow::showOsd(const std::wstring& text) { if (_overlay) _overlay->showOsd(text); }
-void MainWindow::showError(const std::wstring& text) { if (_overlay) _overlay->showError(text); }
+void MainWindow::showOsd(const std::wstring& text) { if (_overlay) { _overlay->showOsd(text); ensureAnimTimer(); } }
+void MainWindow::showError(const std::wstring& text) { if (_overlay) { _overlay->showError(text); ensureAnimTimer(); } }
 
 // ============================================================================
 // Engine callbacks (UI thread)
@@ -1333,13 +1495,19 @@ LRESULT MainWindow::handleVideoMsg(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_LBUTTONDOWN:
             SetFocus(_hwnd);
+            if (_isMiniPlayer) {
+                ReleaseCapture();
+                SendMessageW(_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                return 0;
+            }
             if (_isFullscreen && _fsBarVisible) {
                 GetCursorPos(&_lastMousePt);
                 hideFullscreenBar();
             }
             return 0;
         case WM_LBUTTONDBLCLK:
-            runAction("Fullscreen");
+            if (_isMiniPlayer) setMiniPlayer(false);
+            else runAction("Fullscreen");
             return 0;
         case WM_MBUTTONDOWN:
             togglePlayPause();
@@ -1351,7 +1519,7 @@ LRESULT MainWindow::handleVideoMsg(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSEMOVE:
-            if (_isFullscreen) {
+            if (_isFullscreen || _isMiniPlayer) {
                 POINT pt{};
                 GetCursorPos(&pt);
                 if (std::abs(pt.x - _lastMousePt.x) >= 2 || std::abs(pt.y - _lastMousePt.y) >= 2) {
@@ -1399,15 +1567,33 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_TIMER:
             if (wp == TimerTickId) onTick250ms();
-            else if (wp == TimerAnimId && _overlay) _overlay->tickAnimation();
-            else if (wp == TimerFsHideId) {
-                if (_isFullscreen && _fullscreenBar) {
+            else if (wp == TimerAnimId) {
+                if (_overlay) _overlay->tickAnimation();
+                tickFsBarFade();
+                bool barAnim = false;
+                if (_dockedBar) barAnim |= _dockedBar->tickAnimation();
+                if (_fullscreenBar) barAnim |= _fullscreenBar->tickAnimation();
+                bool overlayAnim = _overlay && _overlay->isAnimating();
+                bool fsFadeAnim = std::abs(_fsBarAlpha - _fsBarTargetAlpha) >= 0.5f;
+                if (!barAnim && !overlayAnim && !fsFadeAnim) {
+                    KillTimer(_hwnd, TimerAnimId);
+                    _animTimerActive = false;
+                }
+            } else if (wp == TimerFsHideId) {
+                if ((_isFullscreen || _isMiniPlayer) && _fullscreenBar) {
+                    if (_isUserSeeking) { SetTimer(_hwnd, TimerFsHideId, 1000, nullptr); return 0; }
                     POINT pt{}; GetCursorPos(&pt);
                     RECT br{}; GetWindowRect(_fullscreenBar->hwnd(), &br);
                     if (!PtInRect(&br, pt)) hideFullscreenBar();
+                    else SetTimer(_hwnd, TimerFsHideId, 1000, nullptr);
                 }
             }
             return 0;
+        case WM_APP_OSD_MSG: {
+            auto* msg = reinterpret_cast<std::wstring*>(lp);
+            if (msg) { showOsd(*msg); delete msg; }
+            return 0;
+        }
         case WM_APP_VLC_EVENT:
             drainVlcEvents();
             return 0;
@@ -1506,11 +1692,13 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 case ID_JUMP_TIME: runAction("JumpToTime"); break;
                 case ID_RECORD: runAction("Record"); break;
                 case ID_AB_LOOP: runAction("AbLoop"); break;
+                case ID_EXPORT_AB: runAction("ExportAbClip"); break;
                 case ID_PLAY_PAUSE: runAction("PlayPause"); break;
                 case ID_STOP: runAction("Stop"); break;
                 case ID_PREV: runAction("Previous"); break;
                 case ID_NEXT: runAction("Next"); break;
                 case ID_NEXT_FRAME: runAction("NextFrame"); break;
+                case ID_PREV_FRAME: runAction("PrevFrame"); break;
                 case ID_SPEED_FASTER: runAction("Faster"); break;
                 case ID_SPEED_NORMAL: runAction("NormalSpeed"); break;
                 case ID_SPEED_SLOWER: runAction("Slower"); break;
@@ -1518,6 +1706,7 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 case ID_VOL_DOWN: runAction("VolumeDown"); break;
                 case ID_MUTE: runAction("Mute"); break;
                 case ID_FULLSCREEN: runAction("Fullscreen"); break;
+                case ID_MINI_PLAYER: runAction("MiniPlayer"); break;
                 case ID_ALWAYS_ON_TOP: runAction("AlwaysOnTop"); break;
                 case ID_ROTATE: runAction("RotateVideo"); break;
                 case ID_SNAPSHOT: runAction("Snapshot"); break;
@@ -1570,12 +1759,13 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
             auto& s = _settings.current();
             WINDOWPLACEMENT wpSave{ sizeof(wpSave) };
             if (GetWindowPlacement(_hwnd, &wpSave)) {
-                const RECT& r = _isFullscreen ? _savedPlacement.rcNormalPosition : wpSave.rcNormalPosition;
+                bool transient = _isFullscreen || _isMiniPlayer;
+                const RECT& r = transient ? _savedPlacement.rcNormalPosition : wpSave.rcNormalPosition;
                 s.windowLeft = r.left;
                 s.windowTop = r.top;
                 s.windowWidth = r.right - r.left;
                 s.windowHeight = r.bottom - r.top;
-                s.windowMaximized = _isFullscreen ? _savedMaximized : (IsZoomed(_hwnd) != 0);
+                s.windowMaximized = transient ? _savedMaximized : (IsZoomed(_hwnd) != 0);
             }
             saveState();
             KillTimer(_hwnd, TimerTickId);

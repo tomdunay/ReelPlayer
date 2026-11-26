@@ -23,6 +23,10 @@ struct AppSettings {
 
     // Engine (applied at startup)
     bool hardwareDecoding = true;
+    std::wstring hwDecodeMode = L"Auto"; // Auto | D3D11 | DXVA2 | Off
+    int fileCachingMs = 300;
+    int networkCachingMs = 1000;
+    bool fastSeek = true;
     std::wstring audioDeviceId;
 
     // Subtitles (applied at startup)

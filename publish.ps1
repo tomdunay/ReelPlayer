@@ -3,7 +3,8 @@
   Builds and packages the native C++20 + Win32 + Direct2D Reel Player release (win-x64).
 #>
 param(
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$Installer
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -61,6 +62,23 @@ Copy-Item (Join-Path $root 'README.md') $out -Force -ErrorAction SilentlyContinu
 
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -CompressionLevel Optimal
+
+if ($Installer) {
+    $iscc = (Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+    if (-not $iscc) {
+        foreach ($cand in @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        )) {
+            if (Test-Path $cand) { $iscc = $cand; break }
+        }
+    }
+    if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found. Install Inno Setup 6 or add iscc to PATH.' }
+    Write-Host '== Building Inno Setup installer' -ForegroundColor Cyan
+    & $iscc "/DSourceDir=$out" "/DArch=x64" (Join-Path $root 'installer\ReelPlayer.iss')
+    if ($LASTEXITCODE) { throw 'Inno Setup build failed.' }
+}
 
 $exeSize = '{0:N2} MB' -f ((Get-Item (Join-Path $out 'ReelPlayer.exe')).Length / 1MB)
 $dirSize = '{0:N0} MB' -f ((Get-ChildItem $out -Recurse | Measure-Object Length -Sum).Sum / 1MB)
