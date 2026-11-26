@@ -38,6 +38,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private readonly Dispatcher _ui;
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _resumeTimer;
+    private (MediaItem Item, long Position)? _resumeOffer;
     private int _consecutiveErrors;
     private bool _appliedForCurrentMedia;
     private int _timelineTick;
@@ -83,6 +85,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
 
+        _resumeTimer = new DispatcherTimer(DispatcherPriority.Background, _ui) { Interval = TimeSpan.FromSeconds(12) };
+        _resumeTimer.Tick += (_, _) => DismissResume();
+
         // Restore last session's playlist without playing it.
         var restored = Settings.LastPlaylist.Select(l => new MediaItem(l)).ToList();
         Playlist.AddRange(restored);
@@ -106,7 +111,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] public partial bool HasVideo { get; set; }
     [ObservableProperty] public partial bool IsSeekable { get; set; }
     [ObservableProperty] public partial bool IsRecording { get; set; }
-    [ObservableProperty] public partial float Rate { get; set; } = 1f;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsNonNormalRate), nameof(RateText))]
+    public partial float Rate { get; set; } = 1f;
+
+    public bool IsNonNormalRate => Math.Abs(Rate - 1f) > 0.001f;
+    public string RateText => $"{Rate:0.##}×";
     [ObservableProperty] public partial long LengthMs { get; set; }
     [ObservableProperty] public partial string ElapsedText { get; set; } = "--:--";
     [ObservableProperty] public partial string TotalText { get; set; } = "--:--";
@@ -133,6 +143,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // Window-level UI state that the control bar reflects.
     [ObservableProperty] public partial bool IsPlaylistVisible { get; set; }
+    [ObservableProperty] public partial bool HasResumeOffer { get; set; }
+    [ObservableProperty] public partial string ResumeOfferText { get; set; } = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FullscreenIcon))]
@@ -202,7 +214,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public event Action<string>? OsdRequested;
     public event Action<string>? ErrorRaised;
-    public event Action<MediaItem, long>? ResumeOffered;
     public event Action? OpenFileRequested;
 
     /// <summary>Raised on the UI thread after <see cref="Engine"/> created a new MediaPlayer.</summary>
@@ -278,8 +289,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         Engine.Open(item, startMs, BuildExtraOptions());
 
+        DismissResume();
         if (offerResume && startMs == 0 && Settings.ResumePlayback && item.IsFile && Resume.Get(item.Location) is { } pos)
-            ResumeOffered?.Invoke(item, pos);
+        {
+            _resumeOffer = (item, pos);
+            ResumeOfferText = $"Continue {TimeFormat.Format(pos)}";
+            HasResumeOffer = true;
+            _resumeTimer.Stop();
+            _resumeTimer.Start();
+        }
+    }
+
+    public void AcceptResume()
+    {
+        if (_resumeOffer is { } offer && ReferenceEquals(offer.Item, Playlist.Current))
+            Seek(offer.Position);
+        DismissResume();
+    }
+
+    public void DismissResume()
+    {
+        _resumeTimer.Stop();
+        _resumeOffer = null;
+        HasResumeOffer = false;
     }
 
     /// <summary>Reopens the current item at the current time (needed when per-media options change).</summary>
@@ -388,6 +420,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Stop()
     {
         SaveResumePosition();
+        DismissResume();
         Engine.StopKeepItem();
         IsRecording = false;
         PositionMs = 0;
@@ -622,11 +655,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!Engine.IsActive || !HasVideo) { ShowOsd("No video to snapshot"); return; }
         try
         {
-            Directory.CreateDirectory(Settings.SnapshotFolder);
-            var stem = string.Concat(Title.Split(Path.GetInvalidFileNameChars()));
+            var folder = Engine.CurrentItem is { IsFile: true } item &&
+                         Path.GetDirectoryName(item.Location) is { Length: > 0 } videoDir &&
+                         Directory.Exists(videoDir)
+                ? videoDir
+                : Settings.SnapshotFolder;
+            Directory.CreateDirectory(folder);
+            var rawName = Engine.CurrentItem is { IsFile: true } f ? Path.GetFileNameWithoutExtension(f.Location) : Title;
+            var stem = string.Concat(rawName.Split(Path.GetInvalidFileNameChars()));
             if (stem.Length > 60) stem = stem[..60];
             var ext = Settings.SnapshotFormat == "jpg" ? "jpg" : "png";
-            var file = Path.Combine(Settings.SnapshotFolder,
+            var file = Path.Combine(folder,
                 $"{stem}-{TimeFormat.Format(Player.Time).Replace(':', '.')}-{DateTime.Now:HHmmss}.{ext}");
             if (!Player.TakeSnapshot(0, file, 0, 0)) ShowOsd("Snapshot failed");
         }
@@ -931,6 +970,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _timer.Stop();
+        _resumeTimer.Stop();
         NativeMethods.KeepAwake(false);
         _equalizer?.Dispose();
     }

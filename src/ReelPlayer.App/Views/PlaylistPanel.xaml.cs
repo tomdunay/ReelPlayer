@@ -53,6 +53,12 @@ public partial class PlaylistPanel : UserControl
                     m.Location.Contains(q, StringComparison.OrdinalIgnoreCase));
     }
 
+    private void ClearSearch_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Clear();
+        SearchBox.Focus();
+    }
+
     private void List_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (ItemFromPoint(e.GetPosition(List)) is { } item) ItemActivated?.Invoke(item);

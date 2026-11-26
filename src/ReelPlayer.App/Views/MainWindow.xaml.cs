@@ -21,14 +21,13 @@ public partial class MainWindow : Window
     private HotkeyMap _hotkeys;
     private readonly DispatcherTimer _hideControlsTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _errorTimer = new() { Interval = TimeSpan.FromSeconds(6) };
-    private readonly DispatcherTimer _resumeTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private Window? _overlayWindow;
+    private WindowChrome? _windowChrome;
     private Controls.ControlBar? _fullscreenControls;
     private PlaylistPanel? _playlistView;
     private bool _minimal;
     private Rect _restoreBounds;
     private WindowState _restoreState;
-    private (MediaItem Item, long Position)? _resumeOffer;
     private Point _lastMouse;
 
     public MainWindow(MainViewModel vm)
@@ -36,6 +35,7 @@ public partial class MainWindow : Window
         _vm = vm;
         _hotkeys = new HotkeyMap(vm.Settings.Hotkeys);
         InitializeComponent();
+        _windowChrome = WindowChrome.GetWindowChrome(this);
         DataContext = vm;
         OverlayRoot.DataContext = vm;
 
@@ -50,7 +50,6 @@ public partial class MainWindow : Window
 
         vm.OsdRequested += ShowOsd;
         vm.ErrorRaised += ShowError;
-        vm.ResumeOffered += OfferResume;
         vm.OpenFileRequested += () => RunAction("OpenFile");
         vm.PlayerReplaced += () => VideoView.MediaPlayer = _vm.Player;
         // Each time libVLC creates its video window (including after an engine rebuild), make its letterbox black.
@@ -65,20 +64,25 @@ public partial class MainWindow : Window
 
         _hideControlsTimer.Tick += (_, _) => HideFullscreenControls();
         _errorTimer.Tick += (_, _) => { ErrorBanner.Visibility = Visibility.Collapsed; _errorTimer.Stop(); };
-        _resumeTimer.Tick += (_, _) => DismissResume();
 
         Loaded += OnLoaded;
         SourceInitialized += (_, _) =>
         {
             var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
             NativeMethods.DisableBackdrop(hwnd);
+            UpdateWindowChromeState();
             // Defer WinRT COM activation so it doesn't delay the first paint.
             Dispatcher.BeginInvoke(() => _vm.Smtc.Attach(hwnd), DispatcherPriority.Background);
         };
         PreviewKeyDown += Window_PreviewKeyDown;
         Drop += Window_Drop;
         DragOver += Window_DragOver;
-        StateChanged += (_, _) => { if (WindowState == WindowState.Minimized && _vm.Settings.PauseOnMinimize) _vm.Pause(); };
+        DragLeave += Window_DragLeave;
+        StateChanged += (_, _) =>
+        {
+            UpdateWindowChromeState();
+            if (WindowState == WindowState.Minimized && _vm.Settings.PauseOnMinimize) _vm.Pause();
+        };
         Closing += OnClosing;
 
         OverlayRoot.MouseLeftButtonDown += Overlay_MouseLeftButtonDown;
@@ -86,12 +90,17 @@ public partial class MainWindow : Window
         OverlayRoot.MouseWheel += (_, e) => _vm.ChangeVolume(e.Delta > 0 ? 5 : -5);
         OverlayRoot.Drop += Window_Drop;
         OverlayRoot.DragOver += Window_DragOver;
+        OverlayRoot.DragLeave += Window_DragLeave;
         OverlayRoot.ContextMenuOpening += Overlay_ContextMenuOpening;
-        OverlayRoot.ContextMenu = new ContextMenu();
+        var contextMenu = new ContextMenu();
+        contextMenu.AddHandler(MenuItem.ClickEvent, new RoutedEventHandler(Menu_Click));
+        contextMenu.AddHandler(MenuItem.SubmenuOpenedEvent, new RoutedEventHandler(Menu_SubmenuOpened));
+        OverlayRoot.ContextMenu = contextMenu;
 
         SetPlaylistVisible(vm.Settings.ShowPlaylist);
         StatusBarPanel.Visibility = vm.Settings.ShowStatusBar ? Visibility.Visible : Visibility.Collapsed;
         Topmost = vm.Settings.AlwaysOnTop;
+        UpdateWindowChromeState();
         UpdateTitle();
     }
 
@@ -157,6 +166,8 @@ public partial class MainWindow : Window
                     _vm.Shuffle = !_vm.Shuffle;
                     ShowOsd(_vm.Shuffle ? "Random: on" : "Random: off");
                     break;
+                case "AcceptResume": _vm.AcceptResume(); break;
+                case "DismissResume": _vm.DismissResume(); break;
 
                 // Audio
                 case "VolumeUp": _vm.ChangeVolume(5); break;
@@ -365,8 +376,6 @@ public partial class MainWindow : Window
         cm.Items.Add(new Separator());
         foreach (var obj in MainMenu.Items)
             if (obj is MenuItem mi) cm.Items.Add(CloneMenu(mi));
-        cm.AddHandler(MenuItem.ClickEvent, new RoutedEventHandler(Menu_Click));
-        cm.AddHandler(MenuItem.SubmenuOpenedEvent, new RoutedEventHandler(Menu_SubmenuOpened));
         RefreshChecks(cm.Items);
     }
 
@@ -574,19 +583,61 @@ public partial class MainWindow : Window
 
     private void Window_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText)
-            ? DragDropEffects.Copy : DragDropEffects.None;
+        var ok = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText);
+        e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        DropOverlay.Visibility = ok ? Visibility.Visible : Visibility.Collapsed;
         e.Handled = true;
+    }
+
+    private void Window_DragLeave(object sender, DragEventArgs e)
+    {
+        DropOverlay.Visibility = Visibility.Collapsed;
     }
 
     private void Window_Drop(object sender, DragEventArgs e)
     {
+        DropOverlay.Visibility = Visibility.Collapsed;
         e.Handled = true;
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
             _vm.OpenLocations(files, play: true);
         else if (e.Data.GetData(DataFormats.UnicodeText) is string text && text.Contains("://", StringComparison.Ordinal))
             _vm.OpenLocations(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), play: true);
         Activate();
+    }
+
+    // =====================================================================
+    // Title bar caption buttons & idle CTA
+    // =====================================================================
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void MaxRestore_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void IdleOpen_Click(object sender, RoutedEventArgs e) => RunAction("OpenFile");
+
+    private void UpdateWindowChromeState()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        MaxRestoreButton.Content = maximized ? "\uE923" : "\uE922";
+        MaxRestoreButton.ToolTip = maximized ? "Restore" : "Maximize";
+        if (maximized && !_vm.IsFullscreen)
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            var border = 7.0;
+            if (hwnd != IntPtr.Zero)
+            {
+                var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this).DpiScaleX;
+                if (dpi > 0) border = NativeMethods.GetMaximizedBorderPixels(hwnd) / dpi;
+            }
+            RootPanel.Margin = new Thickness(border);
+        }
+        else
+        {
+            RootPanel.Margin = new Thickness(0);
+        }
     }
 
     // =====================================================================
@@ -604,47 +655,50 @@ public partial class MainWindow : Window
             _restoreBounds = WindowState == WindowState.Maximized && !RestoreBounds.IsEmpty
                 ? RestoreBounds
                 : new Rect(Left, Top, Width, Height);
-            MainMenu.Visibility = Visibility.Collapsed;
+            TitleBar.Visibility = Visibility.Collapsed;
             StatusBarPanel.Visibility = Visibility.Collapsed;
-            DockedControls.Visibility = Visibility.Collapsed;
+            DockedControlsHost.Visibility = Visibility.Collapsed;
             PlaylistColumn.Width = new GridLength(0);
             if (_playlistView is not null) _playlistView.Visibility = Visibility.Collapsed;
             PlaylistSplitter.Visibility = Visibility.Collapsed;
             EnsureFullscreenControls();
+            // Detach WindowChrome in fullscreen so Windows treats this as a true borderless fullscreen
+            // window (hides the taskbar and removes the top caption/resize hit-test zones).
+            WindowChrome.SetWindowChrome(this, null);
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
-            if (WindowState == WindowState.Maximized)
-            {
-                // Stay maximized and expand directly to the full monitor (avoids shrinking to Normal first).
-                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-                if (hwnd != IntPtr.Zero) NativeMethods.SetFullscreenBounds(hwnd);
-            }
-            else
-            {
+            RootPanel.Margin = new Thickness(0);
+            if (WindowState != WindowState.Maximized)
                 WindowState = WindowState.Maximized;
-            }
+            var enterHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (enterHwnd != IntPtr.Zero) NativeMethods.SetFullscreenBounds(enterHwnd);
             ShowFullscreenControls();
         }
         else
         {
+            FullscreenControlsHost.BeginAnimation(OpacityProperty, null);
+            FullscreenScrim.BeginAnimation(OpacityProperty, null);
             FullscreenControlsHost.Visibility = Visibility.Collapsed;
+            FullscreenScrim.Visibility = Visibility.Collapsed;
             _hideControlsTimer.Stop();
             OverlayRoot.Cursor = Cursors.Arrow;
             ApplyChromeVisibility();
             SetPlaylistVisible(_vm.IsPlaylistVisible);
             WindowStyle = WindowStyle.SingleBorderWindow;
             ResizeMode = ResizeMode.CanResize;
+            WindowChrome.SetWindowChrome(this, _windowChrome);
             if (_restoreState == WindowState.Maximized)
             {
                 // Stay maximized and reapply work-area bounds directly (no Normal → Maximized shrink/grow).
-                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-                if (hwnd != IntPtr.Zero) NativeMethods.RefreshMaximizedBounds(hwnd);
+                var exitHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (exitHwnd != IntPtr.Zero) NativeMethods.RefreshMaximizedBounds(exitHwnd);
             }
             else
             {
                 WindowState = WindowState.Normal;
                 Left = _restoreBounds.Left; Top = _restoreBounds.Top; Width = _restoreBounds.Width; Height = _restoreBounds.Height;
             }
+            UpdateWindowChromeState();
         }
     }
 
@@ -658,9 +712,9 @@ public partial class MainWindow : Window
     private void ApplyChromeVisibility()
     {
         if (_vm.IsFullscreen) return;
-        MainMenu.Visibility = _minimal ? Visibility.Collapsed : Visibility.Visible;
+        TitleBar.Visibility = _minimal ? Visibility.Collapsed : Visibility.Visible;
         StatusBarPanel.Visibility = !_minimal && _vm.Settings.ShowStatusBar ? Visibility.Visible : Visibility.Collapsed;
-        DockedControls.Visibility = Visibility.Visible;
+        DockedControlsHost.Visibility = Visibility.Visible;
     }
 
     private void EnsureFullscreenControls()
@@ -716,6 +770,11 @@ public partial class MainWindow : Window
             RunAction("Fullscreen");
             e.Handled = true;
         }
+        else if (e.ClickCount == 1 && _vm.IsFullscreen && FullscreenControlsHost.Visibility == Visibility.Visible)
+        {
+            _lastMouse = e.GetPosition(OverlayRoot);
+            HideFullscreenControls();
+        }
     }
 
     private void Overlay_MouseMove(object sender, MouseEventArgs e)
@@ -728,7 +787,14 @@ public partial class MainWindow : Window
 
     private void ShowFullscreenControls()
     {
-        FullscreenControlsHost.Visibility = Visibility.Visible;
+        if (FullscreenControlsHost.Visibility != Visibility.Visible || FullscreenControlsHost.Opacity < 0.99)
+        {
+            FullscreenControlsHost.Visibility = Visibility.Visible;
+            FullscreenScrim.Visibility = Visibility.Visible;
+            var fadeIn = new DoubleAnimation(1, TimeSpan.FromMilliseconds(140));
+            FullscreenControlsHost.BeginAnimation(OpacityProperty, fadeIn);
+            FullscreenScrim.BeginAnimation(OpacityProperty, fadeIn);
+        }
         OverlayRoot.Cursor = Cursors.Arrow;
         _hideControlsTimer.Stop();
         _hideControlsTimer.Start();
@@ -740,7 +806,17 @@ public partial class MainWindow : Window
         if (!_vm.IsFullscreen) return;
         // Keep the bar while the pointer is on it.
         if (FullscreenControlsHost.IsMouseOver) { _hideControlsTimer.Start(); return; }
-        FullscreenControlsHost.Visibility = Visibility.Collapsed;
+        var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(180));
+        fadeOut.Completed += (_, _) =>
+        {
+            if (_vm.IsFullscreen && !FullscreenControlsHost.IsMouseOver && FullscreenControlsHost.Opacity < 0.05)
+            {
+                FullscreenControlsHost.Visibility = Visibility.Collapsed;
+                FullscreenScrim.Visibility = Visibility.Collapsed;
+            }
+        };
+        FullscreenControlsHost.BeginAnimation(OpacityProperty, fadeOut);
+        FullscreenScrim.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(180)));
         OverlayRoot.Cursor = Cursors.None;
     }
 
@@ -755,7 +831,7 @@ public partial class MainWindow : Window
         anim.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.Zero)));
         anim.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(1200))));
         anim.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(1600))));
-        OsdText.BeginAnimation(OpacityProperty, anim);
+        OsdBadge.BeginAnimation(OpacityProperty, anim);
     }
 
     private void ShowError(string message)
@@ -767,31 +843,6 @@ public partial class MainWindow : Window
     }
 
     private void ErrorClose_Click(object sender, RoutedEventArgs e) => ErrorBanner.Visibility = Visibility.Collapsed;
-
-    private void OfferResume(MediaItem item, long position)
-    {
-        _resumeOffer = (item, position);
-        ResumeText.Text = $"Continue playback from {TimeFormat.Format(position)}?";
-        ResumeBar.Visibility = Visibility.Visible;
-        _resumeTimer.Stop();
-        _resumeTimer.Start();
-    }
-
-    private void ResumeContinue_Click(object sender, RoutedEventArgs e)
-    {
-        if (_resumeOffer is { } offer && ReferenceEquals(offer.Item, _vm.Playlist.Current))
-            _vm.Seek(offer.Position);
-        DismissResume();
-    }
-
-    private void ResumeDismiss_Click(object sender, RoutedEventArgs e) => DismissResume();
-
-    private void DismissResume()
-    {
-        _resumeTimer.Stop();
-        _resumeOffer = null;
-        ResumeBar.Visibility = Visibility.Collapsed;
-    }
 
     // =====================================================================
     // Title, taskbar

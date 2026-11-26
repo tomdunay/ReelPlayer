@@ -104,20 +104,27 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     private static extern int GetSystemMetricsForDpi(int index, uint dpi);
 
-    /// <summary>Expands a borderless maximized window to cover the full monitor (including the taskbar) without unmaximizing.</summary>
+    /// <summary>Expands a borderless window to cover the full monitor (including the taskbar) without unmaximizing.</summary>
     public static void SetFullscreenBounds(IntPtr hwnd)
     {
         if (!TryGetMonitorInfo(hwnd, out var info)) return;
         var r = info.Monitor;
-        SetWindowPos(hwnd, IntPtr.Zero, r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, SWP_FRAMECHANGED | SWP_NOZORDER);
+        // Omit SWP_NOZORDER (HWND_TOP = 0) so Windows re-evaluates Z-order and hides the taskbar.
+        SetWindowPos(hwnd, IntPtr.Zero, r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, SWP_FRAMECHANGED);
+    }
+
+    /// <summary>Width in physical pixels of the invisible resize border on a maximized window.</summary>
+    public static int GetMaximizedBorderPixels(IntPtr hwnd)
+    {
+        var dpi = GetDpiForWindow(hwnd);
+        return GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
     }
 
     /// <summary>Reapplies normal maximized bounds (respecting the taskbar) after restoring window chrome, without unmaximizing.</summary>
     public static void RefreshMaximizedBounds(IntPtr hwnd)
     {
         if (!TryGetMonitorInfo(hwnd, out var info)) return;
-        var dpi = GetDpiForWindow(hwnd);
-        var border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        var border = GetMaximizedBorderPixels(hwnd);
         var r = info.Work;
         SetWindowPos(hwnd, IntPtr.Zero,
             r.Left - border, r.Top - border,
