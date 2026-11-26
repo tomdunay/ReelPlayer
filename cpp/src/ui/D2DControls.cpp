@@ -1228,7 +1228,7 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 _seekDragging = false;
                 ReleaseCapture();
                 int64_t ms = msFromX(x);
-                if (_cb.onSeek) _cb.onSeek(ms, false);
+                if ((_lastSeekMs < 0 || std::abs(ms - _lastSeekMs) > 50) && _cb.onSeek) _cb.onSeek(ms, false);
                 _lastSeekMs = -1;
                 if (_cb.onSeekingChanged) _cb.onSeekingChanged(false);
                 if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
