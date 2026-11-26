@@ -31,18 +31,30 @@ dotnet build                                   # Debug build: src\ReelPlayer.App
 dotnet test tests\ReelPlayer.Core.Tests        # unit tests
 .\publish.ps1                                  # release: dist\ReelPlayer-win-x64\ + .zip
 .\publish.ps1 -Runtime win-arm64               # other architectures: win-x86, win-arm64
+.\publish.ps1 -Layout Folder                   # less RAM + faster start, more disk (see below)
 .\publish.ps1 -Installer                       # also builds dist\ReelPlayer-Setup-x64.exe (needs Inno Setup 6)
 ```
 
 The release is **self-contained**, so the target PC needs no .NET install. It contains:
 
 ```
-ReelPlayer.exe              ~85 MB  single file: app + .NET runtime + WPF (compressed)
-libvlc\win-x64\             ~100 MB libvlc.dll, libvlccore.dll, plugins\ (≈400 files)
+ReelPlayer.exe              ~60 MB  app + .NET runtime + WPF, compressed into one file
+*_cor3.dll (5 files)        ~8 MB   WPF native DLLs (kept beside the exe, not unpacked to %TEMP%)
+libvlc\win-x64\             ~81 MB  libvlc.dll, libvlccore.dll, plugins\ (≈240 files) + plugins.dat cache
 THIRD-PARTY-NOTICES.txt
 ```
 
 libVLC has to stay as loose files next to the exe because it loads its plugins from disk. Distribute the whole folder (or the zip or installer), not just the exe.
+
+**Size and memory.** Measured playing a 720p file, maximized on a 4K screen:
+
+| Build | Disk | Zip | Private memory | Window shown |
+|---|---|---|---|---|
+| v1.0 (before optimization) | 188 MB | 125 MB | ~478 MB | ~1.3 s |
+| `.\publish.ps1` (single file, default) | 150 MB | 96 MB | ~418 MB | ~0.9 s |
+| `.\publish.ps1 -Layout Folder` | ~215 MB | — | ~340 MB | ~0.65 s |
+
+The two layouts work identically. A compressed single file is smaller on disk but has to unpack each .NET assembly it loads into RAM. The folder layout memory-maps them instead. About 125 MB of the total is libVLC decoding the video, which no layout changes.
 
 ## Usage
 
@@ -80,6 +92,8 @@ Implementation notes:
 - **WPF airspace:** the video is a native window, so WPF can't draw over it directly. Overlays (OSD, fullscreen controller, error and resume bars) are placed inside `VideoView`'s content, which LibVLCSharp renders in a transparent window above the video.
 - **Threading:** libVLC events are marshalled to the UI thread, and nothing calls libVLC from inside its own callbacks. `Play`/`Stop` run on a worker thread so the UI never blocks.
 - **Video filters:** libVLC 3 ignores rotate/flip/sharpen when they're given per file, so changing them rebuilds the libVLC engine with the filter and reopens the current item at the same position, keeping pause state and A/V delays. Recording is a per-file option and only reopens the item.
+- **Media keys / Windows media flyout:** `Services/MediaControls.cs` calls the handful of System Media Transport Controls interfaces it needs directly through their COM vtables (IIDs and slots from `Windows.Media.winmd`). This avoids targeting `net10.0-windows10.x`, whose 50 MB Windows SDK projection used to be most of the exe.
+- **libVLC footprint:** plugins the app can never load are excluded (`VlcUnusedFiles` in `ReelPlayer.App.csproj`): stream-output targets other than Record's file/TS path, encoders, service discovery, effect filters VLC's own UI exposes, and similar. Every decoder, demuxer and protocol is kept. `publish.ps1` also has libVLC write `plugins.dat`, so it reads plugin descriptions from the cache instead of loading every plugin DLL at startup.
 - **Letterbox:** WPF's Fluent theme puts a Mica backdrop behind windows, and DWM then shows black GDI pixels as transparent. The main window turns the backdrop off, and libVLC's video container gets a black background, so letterbox bars are black.
 
 ## Licensing

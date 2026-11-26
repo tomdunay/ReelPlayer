@@ -10,12 +10,24 @@ namespace ReelPlayer.App;
 
 public partial class App : Application
 {
-    private const string AppId = "ReelPlayer";
-
-    private SingleInstance? _instance;
+    private readonly SettingsService _settings;
+    private readonly CommandLine _cmd;
+    private readonly SingleInstance? _instance;
+    private readonly Task<PlayerService> _engineTask;
+    private readonly Task<ResumeStore> _resumeTask;
     private PlayerService? _engine;
     private MediaControls? _smtc;
     private MainViewModel? _vm;
+
+    public App(SettingsService settings, CommandLine cmd, SingleInstance? instance,
+               Task<PlayerService> engineTask, Task<ResumeStore> resumeTask)
+    {
+        _settings = settings;
+        _cmd = cmd;
+        _instance = instance;
+        _engineTask = engineTask;
+        _resumeTask = resumeTask;
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -24,32 +36,12 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
             AppLog.Write(ex.ExceptionObject as Exception ?? new Exception("Unknown error"), "Unhandled");
         TaskScheduler.UnobservedTaskException += (_, ex) => { AppLog.Write(ex.Exception, "Task"); ex.SetObserved(); };
-        AppLog.Prune();
 
-        var settings = new SettingsService();
-        settings.Load();
-        var cmd = CommandLine.Parse(e.Args);
-
-        if (settings.Current.OneInstance)
-        {
-            _instance = new SingleInstance(AppId);
-            if (!_instance.IsFirstInstance)
-            {
-                if (_instance.Forward(e.Args)) { Shutdown(); return; }
-                // First instance not answering (hung or closing): carry on as a normal instance.
-            }
-            else
-            {
-                _instance.StartListening();
-            }
-        }
-
-        ApplyTheme(settings.Current.Theme);
+        ApplyTheme(_settings.Current.Theme);
 
         try
         {
-            LibVLCSharp.Shared.Core.Initialize();
-            _engine = new PlayerService(PlayerService.BuildOptions(settings.Current));
+            _engine = _engineTask.GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -63,11 +55,11 @@ public partial class App : Application
         }
 
         _smtc = new MediaControls();
-        _vm = new MainViewModel(settings, _engine, _smtc);
+        _vm = new MainViewModel(_settings, _engine, _smtc, _resumeTask.GetAwaiter().GetResult());
         var window = new MainWindow(_vm);
         MainWindow = window;
         window.Show();
-        window.HandleCommandLine(cmd, fromOtherInstance: false);
+        window.HandleCommandLine(_cmd, fromOtherInstance: false);
 
         if (_instance is { IsFirstInstance: true })
         {

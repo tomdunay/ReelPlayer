@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace ReelPlayer.Core.Services;
 
@@ -54,12 +53,6 @@ public sealed class AppSettings
 
 public sealed class SettingsService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() },
-    };
-
     public SettingsService(string? directory = null)
     {
         Directory = directory ?? AppDataDirectory;
@@ -78,7 +71,7 @@ public sealed class SettingsService
         try
         {
             if (File.Exists(FilePath))
-                Current = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOptions) ?? new AppSettings();
+                Current = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppJsonContext.Default.AppSettings) ?? new AppSettings();
         }
         catch (Exception)
         {
@@ -93,7 +86,7 @@ public sealed class SettingsService
     {
         System.IO.Directory.CreateDirectory(Directory);
         var tmp = FilePath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(Current, JsonOptions));
+        File.WriteAllText(tmp, JsonSerializer.Serialize(Current, AppJsonContext.Default.AppSettings));
         File.Move(tmp, FilePath, overwrite: true);
     }
 

@@ -1,15 +1,43 @@
 // Plays every media file in a folder through libVLC (dummy audio/video output) and reports
 // whether it opened, which streams were found, and whether frames/samples were decoded.
-// Usage: dotnet run --project tools/FormatProbe -- <folder> [report.md]
+//
+//   dotnet run --project tools/FormatProbe -- [--libvlc DIR] <samples folder> [report.md]
+//   dotnet run --project tools/FormatProbe -- --libvlc DIR --cache-gen
+//
+// --libvlc DIR   use the libVLC in DIR (e.g. the trimmed copy in dist\) instead of the NuGet package's
+// --cache-gen    write DIR\plugins\plugins.dat so libVLC doesn't have to load every plugin at startup
 
 using System.Text;
 using LibVLCSharp.Shared;
 
-var folder = args.Length > 0 ? args[0] : Path.Combine("tests", "samples");
-var report = args.Length > 1 ? args[1] : null;
+var rest = new List<string>();
+string? libvlcDir = null;
+var cacheGen = false;
+for (var i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--libvlc" && i + 1 < args.Length) libvlcDir = Path.GetFullPath(args[++i]);
+    else if (args[i] == "--cache-gen") cacheGen = true;
+    else rest.Add(args[i]);
+}
+
+if (libvlcDir is null) Core.Initialize();
+else Core.Initialize(libvlcDir);
+
+if (cacheGen)
+{
+    if (libvlcDir is null) { Console.Error.WriteLine("--cache-gen needs --libvlc DIR"); return 2; }
+    var cache = Path.Combine(libvlcDir, "plugins", "plugins.dat");
+    File.Delete(cache);
+    using (new LibVLC("--reset-plugins-cache", "--no-video-title-show")) { }
+    if (!File.Exists(cache)) { Console.Error.WriteLine("libVLC did not write " + cache); return 1; }
+    Console.WriteLine($"Wrote {cache} ({new FileInfo(cache).Length / 1024} KB)");
+    return 0;
+}
+
+var folder = rest.Count > 0 ? rest[0] : Path.Combine("tests", "samples");
+var report = rest.Count > 1 ? rest[1] : null;
 var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".srt", ".ass", ".vtt", ".txt", ".m3u8", ".m3u", ".pls", ".xspf" };
 
-Core.Initialize();
 using var libvlc = new LibVLC("--vout=dummy", "--aout=dummy", "--no-video-title-show", "--avcodec-hw=none");
 string? lastError = null;
 libvlc.Log += (_, e) => { if (e.Level == LogLevel.Error) lastError = $"{e.Module}: {e.Message}"; };
@@ -55,7 +83,7 @@ foreach (var file in Directory.EnumerateFiles(folder).Where(f => !skip.Contains(
 }
 
 var md = new StringBuilder()
-    .AppendLine($"libVLC {libvlc.Version} — {pass} passed, {fail} failed ({DateTime.Now:yyyy-MM-dd HH:mm})")
+    .AppendLine($"libVLC {libvlc.Version}{(libvlcDir is null ? "" : " (" + libvlcDir + ")")} — {pass} passed, {fail} failed ({DateTime.Now:yyyy-MM-dd HH:mm})")
     .AppendLine()
     .AppendLine("| File | Result | Streams | Video blocks decoded | Audio blocks decoded | Note |")
     .AppendLine("|---|---|---|---|---|---|");

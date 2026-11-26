@@ -39,7 +39,7 @@ public sealed class SingleInstance : IDisposable
         {
             using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out);
             client.Connect(3000);
-            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(args));
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(args, AppJsonContext.Default.StringArray));
             client.Write(bytes, 0, bytes.Length);
             client.Flush();
             return true;
@@ -61,7 +61,7 @@ public sealed class SingleInstance : IDisposable
                 await server.WaitForConnectionAsync(_cts.Token);
                 using var ms = new MemoryStream();
                 await server.CopyToAsync(ms, _cts.Token);
-                var args = JsonSerializer.Deserialize<string[]>(Encoding.UTF8.GetString(ms.ToArray()));
+                var args = JsonSerializer.Deserialize(Encoding.UTF8.GetString(ms.ToArray()), AppJsonContext.Default.StringArray);
                 if (args is not null) ArgumentsReceived?.Invoke(args);
             }
             catch (OperationCanceledException) { break; }

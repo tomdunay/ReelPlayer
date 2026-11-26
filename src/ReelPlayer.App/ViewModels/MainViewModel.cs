@@ -51,13 +51,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private sealed record RestartState(bool WasPaused, string? Osd, long AudioDelayUs, long SpuDelayUs);
 
-    public MainViewModel(SettingsService settings, PlayerService engine, MediaControls smtc)
+    public MainViewModel(SettingsService settings, PlayerService engine, MediaControls smtc, ResumeStore? resume = null)
     {
         _ui = Dispatcher.CurrentDispatcher;
         SettingsService = settings;
         Engine = engine;
         Smtc = smtc;
-        Resume = new ResumeStore();
+        Resume = resume ?? new ResumeStore();
 
         Playlist = new Playlist { Loop = Settings.Loop, Shuffle = Settings.Shuffle };
         Volume = Math.Clamp(Settings.Volume, 0, 200);

@@ -14,7 +14,11 @@ The latest run: **51 passed, 0 failed**.
 ```powershell
 .\tests\make-samples.ps1 -Include4K      # needs ffmpeg on PATH; writes tests\samples\ (git-ignored)
 dotnet run --project tools/FormatProbe -c Release -- tests\samples TESTING-results.md
+# against the trimmed libVLC that actually ships:
+dotnet run --project tools/FormatProbe -c Release -- --libvlc dist\ReelPlayer-win-x64\libvlc\win-x64 tests\samples
 ```
+
+The trimmed libVLC in `dist\` passes all 41 samples. Recording, the equalizer, image adjust, deinterlacing, aspect/crop/zoom, speed, delays and snapshots were also checked against both the full and the trimmed libVLC, and produced identical output and identical log errors.
 
 `FormatProbe` plays every sample through the same libVLC build the app ships, with dummy audio and video output. A file **passes** if it reaches the Playing state with no error and decodes at least one video block (when it has video) and one audio block (when it has audio).
 

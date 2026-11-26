@@ -22,7 +22,7 @@ public sealed class ResumeStore
         {
             if (File.Exists(_filePath))
             {
-                var loaded = JsonSerializer.Deserialize<Dictionary<string, Entry>>(File.ReadAllText(_filePath));
+                var loaded = JsonSerializer.Deserialize(File.ReadAllText(_filePath), AppJsonContext.Default.DictionaryStringEntry);
                 if (loaded is not null) _entries = new Dictionary<string, Entry>(loaded, StringComparer.OrdinalIgnoreCase);
             }
         }
@@ -57,7 +57,7 @@ public sealed class ResumeStore
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
-            File.WriteAllText(_filePath, JsonSerializer.Serialize(_entries));
+            File.WriteAllText(_filePath, JsonSerializer.Serialize(_entries, AppJsonContext.Default.DictionaryStringEntry));
         }
         catch { /* non-fatal */ }
     }

@@ -23,6 +23,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _errorTimer = new() { Interval = TimeSpan.FromSeconds(6) };
     private readonly DispatcherTimer _resumeTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private Window? _overlayWindow;
+    private Controls.ControlBar? _fullscreenControls;
+    private PlaylistPanel? _playlistView;
     private bool _minimal;
     private Rect _restoreBounds;
     private WindowState _restoreState;
@@ -45,11 +47,6 @@ public partial class MainWindow : Window
         ApplyGestureText(MainMenu.Items);
 
         DockedControls.ActionRequested += RunAction;
-        FullscreenControls.ActionRequested += RunAction;
-        PlaylistView.Attach(vm.Playlist);
-        PlaylistView.ItemActivated += item => _vm.PlayItem(item);
-        PlaylistView.ActionRequested += RunAction;
-        PlaylistView.FilesDropped += files => _vm.OpenLocations(files, play: false);
 
         vm.OsdRequested += ShowOsd;
         vm.ErrorRaised += ShowError;
@@ -71,7 +68,13 @@ public partial class MainWindow : Window
         _resumeTimer.Tick += (_, _) => DismissResume();
 
         Loaded += OnLoaded;
-        SourceInitialized += (_, _) => NativeMethods.DisableBackdrop(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+        SourceInitialized += (_, _) =>
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            NativeMethods.DisableBackdrop(hwnd);
+            // Defer WinRT COM activation so it doesn't delay the first paint.
+            Dispatcher.BeginInvoke(() => _vm.Smtc.Attach(hwnd), DispatcherPriority.Background);
+        };
         PreviewKeyDown += Window_PreviewKeyDown;
         Drop += Window_Drop;
         DragOver += Window_DragOver;
@@ -605,26 +608,43 @@ public partial class MainWindow : Window
             StatusBarPanel.Visibility = Visibility.Collapsed;
             DockedControls.Visibility = Visibility.Collapsed;
             PlaylistColumn.Width = new GridLength(0);
-            PlaylistView.Visibility = PlaylistSplitter.Visibility = Visibility.Collapsed;
+            if (_playlistView is not null) _playlistView.Visibility = Visibility.Collapsed;
+            PlaylistSplitter.Visibility = Visibility.Collapsed;
+            EnsureFullscreenControls();
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
-            // Going Normal → Maximized with no chrome covers the taskbar on the window's current monitor.
-            if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
-            WindowState = WindowState.Maximized;
+            if (WindowState == WindowState.Maximized)
+            {
+                // Stay maximized and expand directly to the full monitor (avoids shrinking to Normal first).
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero) NativeMethods.SetFullscreenBounds(hwnd);
+            }
+            else
+            {
+                WindowState = WindowState.Maximized;
+            }
             ShowFullscreenControls();
         }
         else
         {
-            WindowStyle = WindowStyle.SingleBorderWindow;
-            ResizeMode = ResizeMode.CanResize;
-            WindowState = WindowState.Normal;
-            Left = _restoreBounds.Left; Top = _restoreBounds.Top; Width = _restoreBounds.Width; Height = _restoreBounds.Height;
-            WindowState = _restoreState == WindowState.Maximized ? WindowState.Maximized : WindowState.Normal;
             FullscreenControlsHost.Visibility = Visibility.Collapsed;
             _hideControlsTimer.Stop();
             OverlayRoot.Cursor = Cursors.Arrow;
             ApplyChromeVisibility();
             SetPlaylistVisible(_vm.IsPlaylistVisible);
+            WindowStyle = WindowStyle.SingleBorderWindow;
+            ResizeMode = ResizeMode.CanResize;
+            if (_restoreState == WindowState.Maximized)
+            {
+                // Stay maximized and reapply work-area bounds directly (no Normal → Maximized shrink/grow).
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero) NativeMethods.RefreshMaximizedBounds(hwnd);
+            }
+            else
+            {
+                WindowState = WindowState.Normal;
+                Left = _restoreBounds.Left; Top = _restoreBounds.Top; Width = _restoreBounds.Width; Height = _restoreBounds.Height;
+            }
         }
     }
 
@@ -643,6 +663,30 @@ public partial class MainWindow : Window
         DockedControls.Visibility = Visibility.Visible;
     }
 
+    private void EnsureFullscreenControls()
+    {
+        if (_fullscreenControls is not null) return;
+        _fullscreenControls = new Controls.ControlBar
+        {
+            Foreground = (System.Windows.Media.Brush)FindResource("OverlayTextBrush"),
+        };
+        _fullscreenControls.ActionRequested += RunAction;
+        FullscreenControlsHost.Child = _fullscreenControls;
+    }
+
+    private PlaylistPanel EnsurePlaylistView()
+    {
+        if (_playlistView is not null) return _playlistView;
+        _playlistView = new PlaylistPanel();
+        Grid.SetColumn(_playlistView, 2);
+        _playlistView.Attach(_vm.Playlist);
+        _playlistView.ItemActivated += item => _vm.PlayItem(item);
+        _playlistView.ActionRequested += RunAction;
+        _playlistView.FilesDropped += files => _vm.OpenLocations(files, play: false);
+        ContentGrid.Children.Add(_playlistView);
+        return _playlistView;
+    }
+
     private void SetPlaylistVisible(bool visible)
     {
         _vm.IsPlaylistVisible = visible;
@@ -650,15 +694,17 @@ public partial class MainWindow : Window
         if (_vm.IsFullscreen) return;
         if (visible)
         {
+            var panel = EnsurePlaylistView();
             PlaylistColumn.Width = new GridLength(Math.Clamp(_vm.Settings.PlaylistWidth, 200, 900));
-            PlaylistView.Visibility = PlaylistSplitter.Visibility = Visibility.Visible;
-            PlaylistView.FocusList();
+            panel.Visibility = PlaylistSplitter.Visibility = Visibility.Visible;
+            panel.FocusList();
         }
         else
         {
             if (PlaylistColumn.ActualWidth > 0) _vm.Settings.PlaylistWidth = PlaylistColumn.ActualWidth;
             PlaylistColumn.Width = new GridLength(0);
-            PlaylistView.Visibility = PlaylistSplitter.Visibility = Visibility.Collapsed;
+            if (_playlistView is not null) _playlistView.Visibility = Visibility.Collapsed;
+            PlaylistSplitter.Visibility = Visibility.Collapsed;
         }
     }
 

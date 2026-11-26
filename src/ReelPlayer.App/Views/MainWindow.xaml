@@ -211,18 +211,14 @@
                     <TextBlock x:Name="OsdText" Style="{StaticResource OsdText}" HorizontalAlignment="Right" VerticalAlignment="Top"
                                Margin="0,16,22,0" IsHitTestVisible="False" Opacity="0" TextTrimming="CharacterEllipsis" MaxWidth="700" />
 
-                    <!-- Fullscreen controller (auto-hides) -->
+                    <!-- Fullscreen controller (auto-hides, created on first fullscreen) -->
                     <Border x:Name="FullscreenControlsHost" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Margin="40,0,40,24"
-                            MaxWidth="1100" CornerRadius="8" Background="{StaticResource OverlayBrush}" Visibility="Collapsed">
-                        <controls:ControlBar x:Name="FullscreenControls" Foreground="{StaticResource OverlayTextBrush}" />
-                    </Border>
+                            MaxWidth="1100" CornerRadius="8" Background="{StaticResource OverlayBrush}" Visibility="Collapsed" />
                 </Grid>
             </vlc:VideoView>
 
             <GridSplitter x:Name="PlaylistSplitter" Grid.Column="1" Width="5" ResizeBehavior="PreviousAndNext"
                           HorizontalAlignment="Stretch" Background="{DynamicResource ControlStrokeColorDefaultBrush}" Visibility="Collapsed" />
-
-            <views:PlaylistPanel x:Name="PlaylistView" Grid.Column="2" Visibility="Collapsed" />
         </Grid>
     </DockPanel>
 </Window>

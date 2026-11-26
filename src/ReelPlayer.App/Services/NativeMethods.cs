@@ -70,6 +70,68 @@ internal static class NativeMethods
     private const int GCLP_HBRBACKGROUND = -10;
     private const int BLACK_BRUSH = 4;
 
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_FRAMECHANGED = 0x0020;
+    private const int SM_CXSIZEFRAME = 32;
+    private const int SM_CXPADDEDBORDER = 92;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public Rect Monitor;
+        public Rect Work;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetricsForDpi(int index, uint dpi);
+
+    /// <summary>Expands a borderless maximized window to cover the full monitor (including the taskbar) without unmaximizing.</summary>
+    public static void SetFullscreenBounds(IntPtr hwnd)
+    {
+        if (!TryGetMonitorInfo(hwnd, out var info)) return;
+        var r = info.Monitor;
+        SetWindowPos(hwnd, IntPtr.Zero, r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, SWP_FRAMECHANGED | SWP_NOZORDER);
+    }
+
+    /// <summary>Reapplies normal maximized bounds (respecting the taskbar) after restoring window chrome, without unmaximizing.</summary>
+    public static void RefreshMaximizedBounds(IntPtr hwnd)
+    {
+        if (!TryGetMonitorInfo(hwnd, out var info)) return;
+        var dpi = GetDpiForWindow(hwnd);
+        var border = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        var r = info.Work;
+        SetWindowPos(hwnd, IntPtr.Zero,
+            r.Left - border, r.Top - border,
+            (r.Right - r.Left) + border * 2, (r.Bottom - r.Top) + border * 2,
+            SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    private static bool TryGetMonitorInfo(IntPtr hwnd, out MonitorInfo info)
+    {
+        info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        return monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref info);
+    }
+
     /// <summary>
     /// libVLC's "VLC video main" container window fills the video area but only the picture is drawn, and its class
     /// has no background brush, so letterbox bars show whatever is behind it. Give that (libVLC-private) class a

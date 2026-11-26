@@ -13,18 +13,22 @@ namespace ReelPlayer.App.Controls;
 public partial class ControlBar : UserControl
 {
     private MainViewModel? _vm;
-    private bool _mouseSeeking;
+    private bool _trackDragging;
     private bool _thumbDragging;
     private DateTime _lastLiveSeek;
+    private long _lastSeekMs = -1;
 
     public ControlBar()
     {
         InitializeComponent();
         DataContextChanged += (_, _) => Attach(DataContext as MainViewModel);
 
-        SeekSlider.PreviewMouseLeftButtonDown += (_, _) => BeginSeek(ref _mouseSeeking);
-        SeekSlider.PreviewMouseLeftButtonUp += (_, _) => { if (_mouseSeeking) { _mouseSeeking = false; EndSeek(); } };
-        SeekSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((_, _) => BeginSeek(ref _thumbDragging)));
+        // Slider with IsMoveToPointEnabled handles PreviewMouseLeftButtonDown in its class handler
+        // (updating Value and setting e.Handled = true) before instance handlers run, so listen with handledEventsToo.
+        SeekSlider.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(SeekSlider_PreviewMouseLeftButtonDown), handledEventsToo: true);
+        SeekSlider.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(SeekSlider_PreviewMouseLeftButtonUp), handledEventsToo: true);
+        SeekSlider.LostMouseCapture += (_, _) => { if (_trackDragging) { _trackDragging = false; EndSeek(); } };
+        SeekSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((_, _) => BeginThumbDrag()));
         SeekSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) => { _thumbDragging = false; EndSeek(); }));
         SeekSlider.ValueChanged += SeekSlider_ValueChanged;
         SeekSlider.MouseMove += SeekSlider_MouseMove;
@@ -35,7 +39,7 @@ public partial class ControlBar : UserControl
     /// <summary>Raised with an action id (PlayPause, Stop, Fullscreen, …) when a button is clicked.</summary>
     public event Action<string>? ActionRequested;
 
-    private bool IsSeeking => _mouseSeeking || _thumbDragging;
+    private bool IsSeeking => _trackDragging || _thumbDragging;
 
     private void Attach(MainViewModel? vm)
     {
@@ -65,28 +69,53 @@ public partial class ControlBar : UserControl
         }
     }
 
-    private void BeginSeek(ref bool flag)
+    private void SeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        flag = true;
+        if (!e.Handled || _vm is null) return; // Thumb clicks are not handled by Slider; DragStarted handles those.
+        _trackDragging = true;
+        _vm.IsUserSeeking = true;
+        var ms = (long)SeekSlider.Value;
+        _lastSeekMs = ms;
+        _lastLiveSeek = DateTime.UtcNow;
+        _vm.Seek(ms);
+        SeekSlider.CaptureMouse();
+    }
+
+    private void SeekSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_trackDragging) return;
+        _trackDragging = false;
+        if (SeekSlider.IsMouseCaptured) SeekSlider.ReleaseMouseCapture();
+        EndSeek();
+    }
+
+    private void BeginThumbDrag()
+    {
+        _thumbDragging = true;
+        _lastSeekMs = (long)SeekSlider.Value;
         if (_vm is not null) _vm.IsUserSeeking = true;
     }
 
     private void EndSeek()
     {
         if (IsSeeking || _vm is null) return;
-        _vm.Seek((long)SeekSlider.Value);
+        var ms = (long)SeekSlider.Value;
+        if (ms != _lastSeekMs) _vm.Seek(ms);
+        _lastSeekMs = -1;
         _vm.IsUserSeeking = false;
     }
 
     private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (!IsSeeking || _vm is null) return;
-        _vm.UpdateTimeTexts((long)e.NewValue, _vm.LengthMs);
+        var ms = (long)e.NewValue;
+        _vm.UpdateTimeTexts(ms, _vm.LengthMs);
         // Live scrubbing, throttled so libVLC is not flooded with seeks.
         if ((DateTime.UtcNow - _lastLiveSeek).TotalMilliseconds > 120)
         {
             _lastLiveSeek = DateTime.UtcNow;
-            _vm.Seek((long)e.NewValue);
+            _lastSeekMs = ms;
+            _vm.Seek(ms);
         }
     }
 
@@ -98,6 +127,13 @@ public partial class ControlBar : UserControl
             return;
         }
         var x = e.GetPosition(SeekSlider).X;
+        if (_trackDragging && e.LeftButton == MouseButtonState.Pressed)
+        {
+            const double thumbHalf = 6;
+            var usable = SeekSlider.ActualWidth - thumbHalf * 2;
+            if (usable > 0)
+                SeekSlider.Value = Math.Clamp((x - thumbHalf) / usable, 0, 1) * SeekSlider.Maximum;
+        }
         var frac = Math.Clamp(x / SeekSlider.ActualWidth, 0, 1);
         SeekTipText.Text = TimeFormat.Format((long)(frac * _vm.LengthMs));
         SeekTip.HorizontalOffset = x - 22;
