@@ -174,10 +174,22 @@ bool MainWindow::create() {
             _settings.current().fileBrowserWidth = static_cast<double>(newWidthDip);
             layoutChildren();
         },
+        [this](FileSortMode mode, bool asc) {
+            _settings.current().fileBrowserSort = (mode == FileSortMode::Size) ? L"Size"
+                : (mode == FileSortMode::DateCreated ? L"Date" : L"Name");
+            _settings.current().fileBrowserSortAsc = asc;
+            saveState();
+        },
         [this]() {
             setFileBrowser(false);
         }
     });
+    {
+        FileSortMode sm = FileSortMode::Name;
+        if (s.fileBrowserSort == L"Size") sm = FileSortMode::Size;
+        else if (s.fileBrowserSort == L"Date") sm = FileSortMode::DateCreated;
+        _fileBrowser->setSort(sm, s.fileBrowserSortAsc);
+    }
 
     // Video host child HWND
     _videoHost = CreateWindowExW(0, L"ReelVideoHost", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
@@ -894,6 +906,7 @@ void MainWindow::seek(int64_t ms, bool asyncCoalesced) {
     ms = std::max<int64_t>(0, len > 0 ? std::min<int64_t>(ms, len - 500) : ms);
     _engine.setTimeMs(ms, asyncCoalesced);
     _posMs = ms;
+    _lastSeekTick = GetTickCount64();
     if (!asyncCoalesced) _smtc.updateTimeline(ms, len);
     pushControlBarState();
 }
@@ -901,9 +914,13 @@ void MainWindow::seek(int64_t ms, bool asyncCoalesced) {
 void MainWindow::seekRelative(int64_t deltaMs) {
     if (!_engine.isActive()) return;
     if (!_engine.isSeekable()) { showOsd(L"This media is not seekable"); return; }
-    int64_t target = _engine.timeMs() + deltaMs;
+    // If user taps arrow keys rapidly before VLC finishes the previous seek, accumulate from _posMs
+    int64_t base = (GetTickCount64() - _lastSeekTick < 500) ? _posMs : _engine.timeMs();
+    int64_t target = std::max<int64_t>(0, base + deltaMs);
+    int64_t len = _engine.lengthMs();
+    if (len > 0) target = std::min<int64_t>(target, std::max<int64_t>(0, len - 500));
     seek(target);
-    showOsd(TimeFormat::format(std::max<int64_t>(0, target)) + L" / " + TimeFormat::format(_engine.lengthMs()));
+    showOsd(TimeFormat::format(target) + L" / " + TimeFormat::format(len));
 }
 
 void MainWindow::setVolume(int vol) {
@@ -1617,7 +1634,7 @@ void MainWindow::onTick250ms() {
     int64_t time = _engine.timeMs();
     if (len > 0 && len != _lenMs) _lenMs = len;
     _isSeekable = _engine.isSeekable();
-    if (!_isUserSeeking && time >= 0) {
+    if (!_isUserSeeking && time >= 0 && (GetTickCount64() - _lastSeekTick) >= 350) {
         _posMs = time;
         if (_abStartMs && _abEndMs && time >= *_abEndMs) {
             seek(*_abStartMs);

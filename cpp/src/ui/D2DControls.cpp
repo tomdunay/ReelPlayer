@@ -410,13 +410,6 @@ void D2DControlBar::setState(const ControlBarState& s) {
         ++_thumbReqGen;
     }
     _state = s;
-    // Start single-pass background keyframe storyboard pre-warming once we know the duration
-    // (only on the docked bar so fullscreen/docked don't double-extract; or whichever is active).
-    if (!_floating && !_ffmpegMissing && _state.hasVideo && !_thumbMediaPath.empty() &&
-        _state.lengthMs > 2000 && _thumbMediaLenMs == 0) {
-        _thumbMediaLenMs = _state.lengthMs;
-        startPrewarmThumbnails(_thumbMediaPath, _thumbMediaLenMs);
-    }
     redraw();
 }
 
@@ -1131,11 +1124,10 @@ void D2DControlBar::updateHoverPopup() {
         std::wstring ts = TimeFormat::format(hoverMs);
         std::wstring ch = chapterAt(hoverMs);
         const std::vector<uint8_t>* thumb = nullptr;
-        if (_state.hasVideo && !_thumbMediaPath.empty()) {
-            // Instant hit from pre-warmed storyboard or nearest cached keyframe (within 15s)
-            int64_t prewarmStep = std::max<int64_t>(2000, _state.lengthMs / 48);
-            thumb = findCachedThumb(hoverMs, std::max<int64_t>(prewarmStep, 15000));
-            if (!findCachedThumb(hoverMs, std::max<int64_t>(2500, prewarmStep))) {
+        if (_state.hasVideo && !_thumbMediaPath.empty() && !_seekDragging) {
+            thumb = findCachedThumb(hoverMs, 4000);
+            // Debounce on-demand ffmpeg by 90 ms so quickly clicking the seek bar never spawns ffmpeg or contends with VLC seek I/O
+            if (!findCachedThumb(hoverMs, 1500) && (GetTickCount64() - _lastSeekHoverMoveTick) >= 90) {
                 requestThumbnail(_thumbMediaPath, hoverMs);
             }
         }
@@ -1223,6 +1215,12 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
 
             bool prevSeekHover = _seekHover;
             _seekHover = _state.isSeekable && ptInRect(_seekRect, _mouseX, _mouseY);
+            if (_seekHover) {
+                _lastSeekHoverMoveTick = GetTickCount64();
+                SetTimer(_hwnd, 91, 100, nullptr); // trigger thumbnail once cursor pauses briefly on seek bar
+            } else {
+                KillTimer(_hwnd, 91);
+            }
             _hoverBtn = -1;
             for (int i = 0; i < static_cast<int>(_buttons.size()); ++i) {
                 if (ptInRect(_buttons[i].rc, _mouseX, _mouseY)) { _hoverBtn = i; break; }
@@ -1235,6 +1233,7 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSELEAVE:
+            KillTimer(_hwnd, 91);
             _mouseInside = false;
             _seekHover = false;
             _hoverBtn = -1;
@@ -1242,6 +1241,13 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
             if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
             redraw();
             return 0;
+        case WM_TIMER:
+            if (wp == 91) {
+                KillTimer(_hwnd, 91);
+                if (_seekHover && !_seekDragging) updateHoverPopup();
+                return 0;
+            }
+            break;
         case WM_APP_THUMB_READY: {
             auto* res = reinterpret_cast<ThumbResultMsg*>(lp);
             if (res) {
@@ -1273,7 +1279,8 @@ LRESULT D2DControlBar::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 _state.positionMs = ms;
                 _lastSeekMs = ms;
                 _lastLiveSeekTick = GetTickCount64();
-                if (_cb.onSeek) _cb.onSeek(ms, true);
+                // Single click executes immediate direct seek (no worker-queue delay)
+                if (_cb.onSeek) _cb.onSeek(ms, false);
                 if (_cb.onNeedAnimTick) _cb.onNeedAnimTick();
                 updateHoverPopup();
                 redraw();

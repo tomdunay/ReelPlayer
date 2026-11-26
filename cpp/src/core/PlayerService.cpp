@@ -66,6 +66,8 @@ std::vector<std::string> PlayerService::buildOptions(const AppSettings& s) {
         "--no-snapshot-preview",
         "--no-stats",
         "--avcodec-hw=" + hw,
+        "--avcodec-threads=0",
+        "--avcodec-fast",
         "--file-caching=" + std::to_string(fileCache),
         "--network-caching=" + std::to_string(netCache),
         std::string("--snapshot-format=") + (s.snapshotFormat == L"jpg" ? "jpg" : "png"),

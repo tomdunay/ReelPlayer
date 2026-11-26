@@ -194,6 +194,7 @@ private:
 
     std::optional<std::pair<MediaItemPtr, int64_t>> _resumeOffer;
     ULONGLONG _resumeOfferTick = 0;
+    ULONGLONG _lastSeekTick = 0;
     ULONGLONG _fsLastMouseTick = 0;
     POINT _lastMousePt{ -1, -1 };
 

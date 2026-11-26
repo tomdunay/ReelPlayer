@@ -21,14 +21,14 @@ struct AppSettings {
     bool autoAdvanceFolder = true;
     bool startFullscreen = false;
     bool autoFitWindow = true;
-    bool clickToPause = true;
+    bool clickToPause = false;
 
     // Engine (applied at startup)
     bool hardwareDecoding = true;
     std::wstring hwDecodeMode = L"Auto"; // Auto | D3D11 | DXVA2 | Off
     int fileCachingMs = 300;
     int networkCachingMs = 1000;
-    bool fastSeek = true;
+    bool fastSeek = false;
     std::wstring audioDeviceId;
 
     // Subtitles (applied at startup)
@@ -60,6 +60,8 @@ struct AppSettings {
     bool showFileBrowser = false;
     double fileBrowserWidth = 280;
     std::wstring fileBrowserDir;
+    std::wstring fileBrowserSort = L"Name"; // Name | Size | Date
+    bool fileBrowserSortAsc = true;
     std::wstring lastFolder;
     std::vector<std::wstring> lastPlaylist;
     int lastPlaylistIndex = -1;

@@ -10,12 +10,15 @@
 
 namespace reel {
 
+enum class FileSortMode { Name = 0, Size = 1, DateCreated = 2 };
+
 struct FileBrowserCallbacks {
     std::function<void(const std::wstring&)> onPlayFile;
     std::function<void(const std::wstring&)> onBeforeDelete;
     std::function<void(const std::wstring&)> onFileDeleted;
     std::function<void(const std::wstring&)> onDirectoryChanged;
     std::function<void(int)> onWidthChanged; // new width in DIPs
+    std::function<void(FileSortMode, bool)> onSortChanged;
     std::function<void()> onCloseRequested;
 };
 
@@ -35,6 +38,7 @@ public:
 
     void setCallbacks(FileBrowserCallbacks cb) { _cb = std::move(cb); }
     void setDarkTheme(bool dark);
+    void setSort(FileSortMode mode, bool ascending);
     void setActiveFile(const std::wstring& path);
     void openDirectory(const std::wstring& dir);
     void refresh();
@@ -45,6 +49,9 @@ private:
         std::wstring name;
         std::wstring path;
         std::wstring extBadge; // e.g. "MP4", "MKV"
+        std::wstring sizeText; // e.g. "1.4 GB", "428 MB"
+        uint64_t sizeBytes = 0;
+        uint64_t createdTime = 0; // FILETIME as 64-bit ticks
         bool isDir = false;
         bool isDrive = false;
         bool loaded = false;
@@ -89,6 +96,8 @@ private:
     void deleteNode(Node* node);
     void navigateUp();
     void browseForFolder();
+    void showSortMenu(int screenX, int screenY);
+    void sortNodeRecursive(Node* node);
     void showContextMenu(Node* node, int screenX, int screenY);
 
     void computeHeaderLayout(float innerW);
@@ -107,6 +116,8 @@ private:
     ID2D1SolidColorBrush* _brush = nullptr;
 
     bool _dark = true;
+    FileSortMode _sortMode = FileSortMode::Name;
+    bool _sortAsc = true;
     bool _animTimerActive = false;
     bool _mouseInside = false;
     bool _splitterHover = false;

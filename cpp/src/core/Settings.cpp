@@ -133,6 +133,8 @@ AppSettings& SettingsService::load() {
         getBool("ShowFileBrowser", s.showFileBrowser);
         getDbl("FileBrowserWidth", s.fileBrowserWidth);
         getWstr("FileBrowserDir", s.fileBrowserDir);
+        getWstr("FileBrowserSort", s.fileBrowserSort);
+        getBool("FileBrowserSortAsc", s.fileBrowserSortAsc);
         getWstr("LastFolder", s.lastFolder);
         if (j.contains("LastPlaylist") && j["LastPlaylist"].is_array()) {
             for (const auto& el : j["LastPlaylist"]) {
@@ -196,6 +198,8 @@ bool SettingsService::save() const {
         j["ShowFileBrowser"] = s.showFileBrowser;
         j["FileBrowserWidth"] = s.fileBrowserWidth;
         j["FileBrowserDir"] = s.fileBrowserDir.empty() ? json(nullptr) : json(toUtf8(s.fileBrowserDir));
+        j["FileBrowserSort"] = toUtf8(s.fileBrowserSort);
+        j["FileBrowserSortAsc"] = s.fileBrowserSortAsc;
         j["LastFolder"] = s.lastFolder.empty() ? json(nullptr) : json(toUtf8(s.lastFolder));
         json lp = json::array();
         for (const auto& item : s.lastPlaylist) lp.push_back(toUtf8(item));

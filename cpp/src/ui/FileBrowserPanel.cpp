@@ -17,8 +17,9 @@ constexpr UINT_PTR TimerAnimId = 71;
 
 constexpr int BTN_UP      = 1;
 constexpr int BTN_BROWSE  = 2;
-constexpr int BTN_REFRESH = 3;
-constexpr int BTN_CLOSE   = 4;
+constexpr int BTN_SORT    = 3;
+constexpr int BTN_REFRESH = 4;
+constexpr int BTN_CLOSE   = 5;
 
 constexpr UINT CTX_PLAY     = 601;
 constexpr UINT CTX_DELETE   = 602;
@@ -62,6 +63,25 @@ std::wstring makeExtBadge(const std::wstring& filename) {
     if (ext.size() > 4) ext.resize(4);
     return ext;
 }
+
+std::wstring formatFileSize(uint64_t bytes) {
+    wchar_t buf[32];
+    constexpr double kKB = 1024.0;
+    constexpr double kMB = 1024.0 * 1024.0;
+    constexpr double kGB = 1024.0 * 1024.0 * 1024.0;
+    if (bytes >= static_cast<uint64_t>(kGB)) {
+        double gb = static_cast<double>(bytes) / kGB;
+        std::swprintf(buf, 32, gb >= 100.0 ? L"%.0f GB" : L"%.1f GB", gb);
+    } else if (bytes >= static_cast<uint64_t>(kMB)) {
+        double mb = static_cast<double>(bytes) / kMB;
+        std::swprintf(buf, 32, mb >= 100.0 ? L"%.0f MB" : L"%.1f MB", mb);
+    } else if (bytes >= static_cast<uint64_t>(kKB)) {
+        std::swprintf(buf, 32, L"%.0f KB", static_cast<double>(bytes) / kKB);
+    } else {
+        std::swprintf(buf, 32, L"%llu B", static_cast<unsigned long long>(bytes));
+    }
+    return buf;
+}
 } // namespace
 
 FileBrowserPanel::FileBrowserPanel(D2DContext& ctx) : _ctx(ctx) {}
@@ -96,6 +116,73 @@ bool FileBrowserPanel::create(HWND parent, HINSTANCE hInst) {
 void FileBrowserPanel::setDarkTheme(bool dark) {
     _dark = dark;
     redraw();
+}
+
+void FileBrowserPanel::setSort(FileSortMode mode, bool ascending) {
+    _sortMode = mode;
+    _sortAsc = ascending;
+    if (_root) {
+        sortNodeRecursive(_root.get());
+        rebuildFlatRows();
+        clampScroll();
+        redraw();
+    }
+}
+
+void FileBrowserPanel::sortNodeRecursive(Node* node) {
+    if (!node || !node->isDir) return;
+    // Don't reorder top-level drive letters (C:, D:, ...)
+    if (node != _root.get() && !node->children.empty()) {
+        std::sort(node->children.begin(), node->children.end(),
+            [this](const std::unique_ptr<Node>& a, const std::unique_ptr<Node>& b) {
+                if (a->isDir != b->isDir) return a->isDir > b->isDir; // folders always first
+                if (a->isDir) {
+                    if (_sortMode == FileSortMode::DateCreated && a->createdTime != b->createdTime)
+                        return _sortAsc ? (a->createdTime < b->createdTime) : (a->createdTime > b->createdTime);
+                    return MediaFiles::naturalLess(a->name, b->name);
+                }
+                if (_sortMode == FileSortMode::Size && a->sizeBytes != b->sizeBytes)
+                    return _sortAsc ? (a->sizeBytes < b->sizeBytes) : (a->sizeBytes > b->sizeBytes);
+                if (_sortMode == FileSortMode::DateCreated && a->createdTime != b->createdTime)
+                    return _sortAsc ? (a->createdTime < b->createdTime) : (a->createdTime > b->createdTime);
+                int cmp = MediaFiles::naturalCompare(a->name, b->name);
+                return (_sortMode == FileSortMode::Name && !_sortAsc) ? (cmp > 0) : (cmp < 0);
+            });
+    }
+    for (auto& ch : node->children) {
+        if (ch->isDir && ch->loaded) sortNodeRecursive(ch.get());
+    }
+}
+
+void FileBrowserPanel::showSortMenu(int screenX, int screenY) {
+    constexpr UINT SORT_NAME = 701;
+    constexpr UINT SORT_SIZE = 702;
+    constexpr UINT SORT_DATE = 703;
+    constexpr UINT SORT_ASC  = 704;
+    constexpr UINT SORT_DESC = 705;
+
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING | (_sortMode == FileSortMode::Name ? MF_CHECKED : 0), SORT_NAME, L"Sort by Name");
+    AppendMenuW(menu, MF_STRING | (_sortMode == FileSortMode::Size ? MF_CHECKED : 0), SORT_SIZE, L"Sort by Size");
+    AppendMenuW(menu, MF_STRING | (_sortMode == FileSortMode::DateCreated ? MF_CHECKED : 0), SORT_DATE, L"Sort by Date Created");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (_sortAsc ? MF_CHECKED : 0), SORT_ASC, L"Ascending");
+    AppendMenuW(menu, MF_STRING | (!_sortAsc ? MF_CHECKED : 0), SORT_DESC, L"Descending");
+
+    UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenX, screenY, 0, _hwnd, nullptr);
+    DestroyMenu(menu);
+
+    FileSortMode nextMode = _sortMode;
+    bool nextAsc = _sortAsc;
+    if (cmd == SORT_NAME) { nextMode = FileSortMode::Name; nextAsc = true; }
+    else if (cmd == SORT_SIZE) { nextMode = FileSortMode::Size; nextAsc = false; }        // largest first by default
+    else if (cmd == SORT_DATE) { nextMode = FileSortMode::DateCreated; nextAsc = false; } // newest first by default
+    else if (cmd == SORT_ASC) nextAsc = true;
+    else if (cmd == SORT_DESC) nextAsc = false;
+    else return;
+
+    setSort(nextMode, nextAsc);
+    if (_cb.onSortChanged) _cb.onSortChanged(nextMode, nextAsc);
 }
 
 void FileBrowserPanel::setActiveFile(const std::wstring& path) {
@@ -207,42 +294,49 @@ void FileBrowserPanel::loadChildren(Node* dirNode) {
     dirNode->loaded = true;
     dirNode->children.clear();
 
-    std::vector<std::pair<std::wstring, std::wstring>> dirs;
-    std::vector<std::pair<std::wstring, std::wstring>> videos;
+    std::wstring base = dirNode->path;
+    if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base.push_back(L'\\');
+    std::wstring pattern = base + L"*";
 
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(fs::path(dirNode->path), fs::directory_options::skip_permission_denied, ec)) {
-        std::error_code e2;
-        std::wstring name = entry.path().filename().wstring();
-        if (entry.is_directory(e2)) {
-            if (!isSkippedSystemDir(name)) dirs.emplace_back(name, entry.path().wstring());
-        } else if (entry.is_regular_file(e2)) {
-            if (MediaFiles::isVideo(name)) videos.emplace_back(name, entry.path().wstring());
+    WIN32_FIND_DATAW fd{};
+    HANDLE hf = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (hf == INVALID_HANDLE_VALUE) return;
+
+    auto fileTimeToU64 = [](const FILETIME& ft) -> uint64_t {
+        return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | static_cast<uint64_t>(ft.dwLowDateTime);
+    };
+
+    do {
+        std::wstring name(fd.cFileName);
+        if (name == L"." || name == L"..") continue;
+        bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if (isDir) {
+            if (isSkippedSystemDir(name)) continue;
+            auto n = std::make_unique<Node>();
+            n->name = name;
+            n->path = base + name;
+            n->isDir = true;
+            n->createdTime = fileTimeToU64(fd.ftCreationTime);
+            n->parent = dirNode;
+            dirNode->children.push_back(std::move(n));
+        } else if (MediaFiles::isVideo(name)) {
+            uint64_t bytes = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | static_cast<uint64_t>(fd.nFileSizeLow);
+            auto n = std::make_unique<Node>();
+            n->name = name;
+            n->path = base + name;
+            n->extBadge = makeExtBadge(name);
+            n->sizeBytes = bytes;
+            if (bytes > 0) n->sizeText = formatFileSize(bytes);
+            n->createdTime = fileTimeToU64(fd.ftCreationTime);
+            n->isDir = false;
+            n->loaded = true;
+            n->parent = dirNode;
+            dirNode->children.push_back(std::move(n));
         }
-    }
+    } while (FindNextFileW(hf, &fd));
+    FindClose(hf);
 
-    auto cmp = [](const auto& a, const auto& b) { return MediaFiles::naturalLess(a.first, b.first); };
-    std::sort(dirs.begin(), dirs.end(), cmp);
-    std::sort(videos.begin(), videos.end(), cmp);
-
-    for (const auto& [name, full] : dirs) {
-        auto n = std::make_unique<Node>();
-        n->name = name;
-        n->path = full;
-        n->isDir = true;
-        n->parent = dirNode;
-        dirNode->children.push_back(std::move(n));
-    }
-    for (const auto& [name, full] : videos) {
-        auto n = std::make_unique<Node>();
-        n->name = name;
-        n->path = full;
-        n->extBadge = makeExtBadge(name);
-        n->isDir = false;
-        n->loaded = true;
-        n->parent = dirNode;
-        dirNode->children.push_back(std::move(n));
-    }
+    sortNodeRecursive(dirNode);
 }
 
 void FileBrowserPanel::populateDrives() {
@@ -510,6 +604,7 @@ void FileBrowserPanel::computeHeaderLayout(float innerW) {
     };
     push(BTN_CLOSE,   L"\uE711", L"Close");
     push(BTN_REFRESH, L"\uE72C", L"Refresh");
+    push(BTN_SORT,    L"\uE8CB", L"Sort");
     push(BTN_BROWSE,  L"\uE8B7", L"Open Folder");
     push(BTN_UP,      L"\uE74A", L"Up");
 }
@@ -637,6 +732,8 @@ void FileBrowserPanel::paint() {
     else {
         sub = std::to_wstring(vidCount) + (vidCount == 1 ? L" video" : L" videos");
         if (dirCount > 0) sub += L"  \u00B7  " + std::to_wstring(dirCount) + (dirCount == 1 ? L" folder" : L" folders");
+        if (_sortMode == FileSortMode::Size) sub += _sortAsc ? L"  \u00B7  Size \u2191" : L"  \u00B7  Size \u2193";
+        else if (_sortMode == FileSortMode::DateCreated) sub += _sortAsc ? L"  \u00B7  Date \u2191" : L"  \u00B7  Date \u2193";
     }
 
     float titleRight = _headerBtns.empty() ? (innerW - 10.0f) : (_headerBtns.back().rc.left - 6.0f);
@@ -740,7 +837,7 @@ void FileBrowserPanel::paint() {
                 br->SetColor(_hoverDeleteBtn ? rgba(0xF87171, a) : rgba(0xA1A1AA, a));
                 _rt->DrawText(L"\uE74D", 1, _ctx.fontIconSmall, delRc, br);
                 rightPad = delRc.left - 4.0f;
-            } else if (!n->extBadge.empty() && innerW > 180.0f) {
+            } else if (!n->extBadge.empty() && innerW > 220.0f) {
                 float badgeW = 34.0f;
                 D2D1_RECT_F brc = D2D1::RectF(innerW - 12.0f - badgeW, cy - 8.5f, innerW - 12.0f, cy + 8.5f);
                 br->SetColor(isPlaying ? rgba(0x14B8A6, 0.28f * a) : (_dark ? rgba(0xFFFFFF, 0.06f * a) : rgba(0x000000, 0.06f * a)));
@@ -750,6 +847,17 @@ void FileBrowserPanel::paint() {
                 _rt->DrawText(n->extBadge.c_str(), static_cast<UINT32>(n->extBadge.size()), _ctx.fontSmall, brc, br);
                 _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 rightPad = brc.left - 6.0f;
+            }
+
+            // Discreet right-aligned file size next to the filename (e.g. "1.4 GB", "428 MB")
+            if (!n->sizeText.empty() && rightPad - textX > 100.0f) {
+                float sizeW = 50.0f;
+                D2D1_RECT_F szRc = D2D1::RectF(rightPad - sizeW, top, rightPad, bot);
+                br->SetColor(isPlaying ? rgba(0x99F6E4, 0.80f * a) : (_dark ? rgba(0x8E8E9A, 0.78f * a) : rgba(0x64646E, 0.80f * a)));
+                _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                _rt->DrawText(n->sizeText.c_str(), static_cast<UINT32>(n->sizeText.size()), _ctx.fontSmall, szRc, br);
+                _ctx.fontSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                rightPad = szRc.left - 8.0f;
             }
 
             br->SetColor(isPlaying ? rgba(0xFFFFFF, a) : (_dark ? rgba(0xD4D4DC, a) : rgba(0x27272A, a)));
@@ -907,6 +1015,12 @@ LRESULT FileBrowserPanel::handleMsg(UINT msg, WPARAM wp, LPARAM lp) {
                     if (ptInRect(b.rc, x, y)) {
                         if (b.id == BTN_UP) navigateUp();
                         else if (b.id == BTN_BROWSE) browseForFolder();
+                        else if (b.id == BTN_SORT) {
+                            POINT pt{ static_cast<LONG>(std::lround(b.rc.left * scale)),
+                                      static_cast<LONG>(std::lround(b.rc.bottom * scale)) };
+                            ClientToScreen(_hwnd, &pt);
+                            showSortMenu(pt.x, pt.y);
+                        }
                         else if (b.id == BTN_REFRESH) refresh();
                         else if (b.id == BTN_CLOSE && _cb.onCloseRequested) _cb.onCloseRequested();
                         return 0;

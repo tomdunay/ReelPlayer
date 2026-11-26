@@ -181,6 +181,7 @@ private:
     int64_t _thumbMediaLenMs = 0;
     int64_t _lastThumbBucket = -1;
     int64_t _thumbReqGen = 0;
+    ULONGLONG _lastSeekHoverMoveTick = 0;
     bool _onDemandBusy = false;
     int64_t _pendingDemandMs = -1;
     std::vector<std::pair<int64_t, std::vector<uint8_t>>> _thumbCache;
