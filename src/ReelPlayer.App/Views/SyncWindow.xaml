@@ -1,0 +1,32 @@
+<Window x:Class="ReelPlayer.App.Views.SyncWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Track Synchronization" Width="460" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Text="Audio/Video" FontWeight="SemiBold" />
+        <DockPanel Margin="0,8,0,0">
+            <Button DockPanel.Dock="Right" Content="&#xE710;" FontFamily="{StaticResource IconFont}" Width="36" Margin="4,0,0,0" Tag="audio:50" Click="Step_Click" ToolTip="+50 ms" />
+            <Button DockPanel.Dock="Right" Content="&#xE738;" FontFamily="{StaticResource IconFont}" Width="36" Margin="4,0,0,0" Tag="audio:-50" Click="Step_Click" ToolTip="-50 ms" />
+            <TextBlock DockPanel.Dock="Right" Text="ms" VerticalAlignment="Center" Margin="6,0,0,0" />
+            <TextBlock Text="Audio track synchronization:" VerticalAlignment="Center" Width="190" />
+            <TextBox x:Name="AudioDelay" LostFocus="Apply" KeyDown="Box_KeyDown" />
+        </DockPanel>
+        <TextBlock Text="Positive values delay the audio (use when the sound comes too early)." Opacity="0.7" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" />
+
+        <TextBlock Text="Subtitles/Video" FontWeight="SemiBold" Margin="0,18,0,0" />
+        <DockPanel Margin="0,8,0,0">
+            <Button DockPanel.Dock="Right" Content="&#xE710;" FontFamily="{StaticResource IconFont}" Width="36" Margin="4,0,0,0" Tag="sub:50" Click="Step_Click" ToolTip="+50 ms" />
+            <Button DockPanel.Dock="Right" Content="&#xE738;" FontFamily="{StaticResource IconFont}" Width="36" Margin="4,0,0,0" Tag="sub:-50" Click="Step_Click" ToolTip="-50 ms" />
+            <TextBlock DockPanel.Dock="Right" Text="ms" VerticalAlignment="Center" Margin="6,0,0,0" />
+            <TextBlock Text="Subtitle track synchronization:" VerticalAlignment="Center" Width="190" />
+            <TextBox x:Name="SubDelay" LostFocus="Apply" KeyDown="Box_KeyDown" />
+        </DockPanel>
+        <TextBlock Text="Positive values show subtitles later." Opacity="0.7" FontSize="12" Margin="0,4,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Reset" MinWidth="80" Margin="0,0,8,0" Click="Reset_Click" />
+            <Button Content="Close" MinWidth="80" IsCancel="True" Click="Close_Click" />
+        </StackPanel>
+    </StackPanel>
+</Window>

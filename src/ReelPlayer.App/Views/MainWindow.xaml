@@ -1,0 +1,228 @@
+<Window x:Class="ReelPlayer.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+        xmlns:controls="clr-namespace:ReelPlayer.App.Controls"
+        xmlns:views="clr-namespace:ReelPlayer.App.Views"
+        Title="Reel Player" Icon="/Assets/app.ico"
+        Width="960" Height="600" MinWidth="420" MinHeight="260"
+        AllowDrop="True" UseLayoutRounding="True">
+
+    <Window.Resources>
+        <!-- Taskbar thumbnail-toolbar glyphs. -->
+        <DrawingImage x:Key="ThumbPrev">
+            <DrawingImage.Drawing>
+                <GeometryDrawing Brush="White" Geometry="M2,2 H4 V14 H2 Z M14,2 V14 L5,8 Z" />
+            </DrawingImage.Drawing>
+        </DrawingImage>
+        <DrawingImage x:Key="ThumbNext">
+            <DrawingImage.Drawing>
+                <GeometryDrawing Brush="White" Geometry="M12,2 H14 V14 H12 Z M2,2 V14 L11,8 Z" />
+            </DrawingImage.Drawing>
+        </DrawingImage>
+        <DrawingImage x:Key="ThumbPlay">
+            <DrawingImage.Drawing>
+                <GeometryDrawing Brush="White" Geometry="M3,1 V15 L14,8 Z" />
+            </DrawingImage.Drawing>
+        </DrawingImage>
+        <DrawingImage x:Key="ThumbPause">
+            <DrawingImage.Drawing>
+                <GeometryDrawing Brush="White" Geometry="M3,2 H6.5 V14 H3 Z M9.5,2 H13 V14 H9.5 Z" />
+            </DrawingImage.Drawing>
+        </DrawingImage>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo x:Name="Taskbar">
+            <TaskbarItemInfo.ThumbButtonInfos>
+                <ThumbButtonInfo x:Name="ThumbPrevButton" Description="Previous" ImageSource="{StaticResource ThumbPrev}" Click="ThumbPrev_Click" />
+                <ThumbButtonInfo x:Name="ThumbPlayButton" Description="Play" ImageSource="{StaticResource ThumbPlay}" Click="ThumbPlay_Click" />
+                <ThumbButtonInfo x:Name="ThumbNextButton" Description="Next" ImageSource="{StaticResource ThumbNext}" Click="ThumbNext_Click" />
+            </TaskbarItemInfo.ThumbButtonInfos>
+        </TaskbarItemInfo>
+    </Window.TaskbarItemInfo>
+
+    <DockPanel x:Name="RootPanel">
+        <!-- ===================== Menu bar ===================== -->
+        <Menu x:Name="MainMenu" DockPanel.Dock="Top" Padding="2,0" FontSize="13">
+            <Menu.ItemContainerStyle>
+                <!-- Compact top-level items: the Fluent defaults are tall for a media player. -->
+                <Style TargetType="MenuItem" BasedOn="{StaticResource {x:Type MenuItem}}">
+                    <Setter Property="Padding" Value="10,3" />
+                </Style>
+            </Menu.ItemContainerStyle>
+            <MenuItem Header="_Media">
+                <MenuItem Header="_Open File…" Tag="OpenFile" />
+                <MenuItem Header="Open _Multiple Files…" Tag="OpenMultiple" />
+                <MenuItem Header="Open _Folder…" Tag="OpenFolder" />
+                <MenuItem Header="Open _Disc…" Tag="OpenDisc" />
+                <MenuItem Header="Open _Network Stream…" Tag="OpenNetwork" />
+                <MenuItem Header="Open _Capture Device…" Tag="OpenCapture" />
+                <Separator />
+                <MenuItem Header="Open _Recent Media" Tag="dyn:Recent"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="Sa_ve Playlist to File…" Tag="SavePlaylist" />
+                <Separator />
+                <MenuItem Header="_Quit" Tag="Quit" />
+            </MenuItem>
+            <MenuItem Header="P_layback">
+                <MenuItem Header="_Title" Tag="dyn:Title"><MenuItem Header="(empty)" /></MenuItem>
+                <MenuItem Header="_Chapter" Tag="dyn:Chapter"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Speed" Tag="dyn:Speed"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Jump Forward" Tag="SeekFwd10" />
+                <MenuItem Header="Jump Bac_kward" Tag="SeekBack10" />
+                <MenuItem Header="Jump to Specific _Time…" Tag="JumpToTime" />
+                <Separator />
+                <MenuItem Header="_Record" Tag="Record" />
+                <Separator />
+                <MenuItem Header="_Play / Pause" Tag="PlayPause" />
+                <MenuItem Header="_Stop" Tag="Stop" />
+                <MenuItem Header="Pre_vious" Tag="Previous" />
+                <MenuItem Header="Ne_xt" Tag="Next" />
+                <MenuItem Header="Next _Frame" Tag="NextFrame" />
+            </MenuItem>
+            <MenuItem Header="_Audio">
+                <MenuItem Header="Audio _Track" Tag="dyn:AudioTrack"><MenuItem Header="(empty)" /></MenuItem>
+                <MenuItem Header="Audio _Device" Tag="dyn:AudioDevice"><MenuItem Header="(empty)" /></MenuItem>
+                <MenuItem Header="_Stereo Mode" Tag="dyn:Stereo"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Increase Volume" Tag="VolumeUp" />
+                <MenuItem Header="_Decrease Volume" Tag="VolumeDown" />
+                <MenuItem Header="_Mute" Tag="Mute" />
+            </MenuItem>
+            <MenuItem Header="_Video">
+                <MenuItem Header="Video _Track" Tag="dyn:VideoTrack"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Fullscreen" Tag="Fullscreen" />
+                <MenuItem Header="Always _on Top" Tag="AlwaysOnTop" />
+                <Separator />
+                <MenuItem Header="_Zoom" Tag="dyn:Zoom"><MenuItem Header="(empty)" /></MenuItem>
+                <MenuItem Header="_Aspect Ratio" Tag="dyn:Aspect"><MenuItem Header="(empty)" /></MenuItem>
+                <MenuItem Header="_Crop" Tag="dyn:Crop"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Deinterlace" Tag="dyn:Deinterlace"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="Take _Snapshot" Tag="Snapshot" />
+            </MenuItem>
+            <MenuItem Header="Subti_tle">
+                <MenuItem Header="_Add Subtitle File…" Tag="AddSubtitle" />
+                <MenuItem Header="Sub _Track" Tag="dyn:SubTrack"><MenuItem Header="(empty)" /></MenuItem>
+                <Separator />
+                <MenuItem Header="_Delay -50 ms" Tag="SubDelayDown" />
+                <MenuItem Header="D_elay +50 ms" Tag="SubDelayUp" />
+            </MenuItem>
+            <MenuItem Header="T_ools">
+                <MenuItem Header="_Effects and Filters…" Tag="Effects" />
+                <MenuItem Header="_Track Synchronization…" Tag="Sync" />
+                <MenuItem Header="Media _Information…" Tag="MediaInfo" />
+                <MenuItem Header="_Codec Information…" Tag="CodecInfo" />
+                <Separator />
+                <MenuItem Header="_Messages…" Tag="Messages" />
+                <Separator />
+                <MenuItem Header="_Preferences…" Tag="Preferences" />
+            </MenuItem>
+            <MenuItem Header="V_iew">
+                <MenuItem Header="_Playlist" Tag="TogglePlaylist" />
+                <MenuItem Header="_Minimal Interface" Tag="MinimalInterface" />
+                <MenuItem Header="_Status Bar" Tag="ToggleStatusBar" />
+                <MenuItem Header="_Fullscreen Interface" Tag="Fullscreen" />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="_Keyboard Shortcuts" Tag="Shortcuts" />
+                <MenuItem Header="_About" Tag="About" />
+            </MenuItem>
+        </Menu>
+
+        <!-- ===================== Status bar ===================== -->
+        <Border x:Name="StatusBarPanel" DockPanel.Dock="Bottom" Padding="10,3" BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Right" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                    <Run Text="{Binding Rate, StringFormat={}{0:0.00}x, Mode=OneWay}" />
+                    <Run Text="   " />
+                    <Run Text="{Binding StatusText, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Text="{Binding Title}" FontSize="12" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            </DockPanel>
+        </Border>
+
+        <!-- ===================== Docked controls ===================== -->
+        <controls:ControlBar x:Name="DockedControls" DockPanel.Dock="Bottom"
+                             Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+
+        <!-- ===================== Video + playlist ===================== -->
+        <Grid x:Name="ContentGrid">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="160" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="PlaylistColumn" Width="0" />
+            </Grid.ColumnDefinitions>
+
+            <vlc:VideoView x:Name="VideoView" Background="Black">
+                <!-- Content of VideoView is drawn in a transparent window above the video (avoids WPF airspace issues).
+                     The near-transparent background makes the whole area hit-testable for clicks, wheel and drops. -->
+                <Grid x:Name="OverlayRoot" AllowDrop="True" Cursor="Arrow">
+                    <Grid.Style>
+                        <Style TargetType="Grid">
+                            <!-- While playing: almost transparent so the video shows but clicks still land here.
+                                 While idle: opaque black, because the native video host paints white once libVLC's output closes. -->
+                            <Setter Property="Background" Value="#01000000" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsIdle}" Value="True">
+                                    <Setter Property="Background" Value="Black" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Grid.Style>
+                    <!-- Idle artwork -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
+                                Visibility="{Binding IsIdle, Converter={StaticResource BoolToVis}}">
+                        <Image Source="/Assets/logo.png" Width="120" Height="120" Opacity="0.85" />
+                        <TextBlock Text="Drop media here or press Ctrl+O" Margin="0,14,0,0" Foreground="#99FFFFFF"
+                                   HorizontalAlignment="Center" FontSize="14" />
+                    </StackPanel>
+
+                    <!-- Error banner (non-modal) -->
+                    <Border x:Name="ErrorBanner" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="12"
+                            Background="#E0B91C1C" CornerRadius="6" Padding="12,8" Visibility="Collapsed" MaxWidth="640">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE711;" Foreground="White"
+                                    Width="24" Height="24" FontSize="11" Margin="8,0,0,0" Click="ErrorClose_Click" />
+                            <TextBlock x:Name="ErrorText" Foreground="White" TextWrapping="Wrap" VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Resume offer -->
+                    <Border x:Name="ResumeBar" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,12,0,0"
+                            Background="{StaticResource OverlayBrush}" CornerRadius="6" Padding="14,6" Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="ResumeText" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0" />
+                            <Button Content="Continue" Padding="12,3" Click="ResumeContinue_Click" Focusable="False" />
+                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" Foreground="White" Width="26" Height="26"
+                                    FontSize="11" Margin="6,0,0,0" Click="ResumeDismiss_Click" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- On-screen display -->
+                    <TextBlock x:Name="OsdText" Style="{StaticResource OsdText}" HorizontalAlignment="Right" VerticalAlignment="Top"
+                               Margin="0,16,22,0" IsHitTestVisible="False" Opacity="0" TextTrimming="CharacterEllipsis" MaxWidth="700" />
+
+                    <!-- Fullscreen controller (auto-hides) -->
+                    <Border x:Name="FullscreenControlsHost" VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Margin="40,0,40,24"
+                            MaxWidth="1100" CornerRadius="8" Background="{StaticResource OverlayBrush}" Visibility="Collapsed">
+                        <controls:ControlBar x:Name="FullscreenControls" Foreground="{StaticResource OverlayTextBrush}" />
+                    </Border>
+                </Grid>
+            </vlc:VideoView>
+
+            <GridSplitter x:Name="PlaylistSplitter" Grid.Column="1" Width="5" ResizeBehavior="PreviousAndNext"
+                          HorizontalAlignment="Stretch" Background="{DynamicResource ControlStrokeColorDefaultBrush}" Visibility="Collapsed" />
+
+            <views:PlaylistPanel x:Name="PlaylistView" Grid.Column="2" Visibility="Collapsed" />
+        </Grid>
+    </DockPanel>
+</Window>

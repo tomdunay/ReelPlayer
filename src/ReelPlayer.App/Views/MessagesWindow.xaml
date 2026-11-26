@@ -1,0 +1,25 @@
+<Window x:Class="ReelPlayer.App.Views.MessagesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Messages" Width="760" Height="480" MinWidth="480" MinHeight="300"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="14">
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Clear" MinWidth="80" Margin="0,0,8,0" Click="Clear_Click" />
+                <Button Content="Save as…" MinWidth="80" Margin="0,0,8,0" Click="Save_Click" />
+                <Button Content="Close" MinWidth="80" IsCancel="True" Click="Close_Click" />
+            </StackPanel>
+            <TextBlock Text="Verbosity:" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <ComboBox x:Name="LevelBox" Width="170" HorizontalAlignment="Left" SelectionChanged="LevelBox_SelectionChanged">
+                <ComboBoxItem Content="Errors" />
+                <ComboBoxItem Content="Warnings and errors" />
+                <ComboBoxItem Content="Notices (all useful)" />
+                <ComboBoxItem Content="Debug (everything)" />
+            </ComboBox>
+        </DockPanel>
+        <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Cascadia Mono, Consolas" FontSize="12"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"
+                 VerticalContentAlignment="Top" AcceptsReturn="True" />
+    </DockPanel>
+</Window>

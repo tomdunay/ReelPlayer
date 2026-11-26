@@ -1,0 +1,100 @@
+<Window x:Class="ReelPlayer.App.Views.OpenMediaWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Open Media" Width="620" Height="500" MinWidth="500" MinHeight="420"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="CanResizeWithGrip">
+    <DockPanel Margin="14">
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <DockPanel Margin="0,0,0,10">
+                <TextBlock Text="Start time:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBox x:Name="StartTimeBox" Width="110" ToolTip="hh:mm:ss, mm:ss or seconds" HorizontalAlignment="Left" />
+            </DockPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Enqueue" MinWidth="90" Margin="0,0,8,0" Click="Enqueue_Click" />
+                <Button Content="Play" MinWidth="90" Margin="0,0,8,0" IsDefault="True" Click="Play_Click" Style="{DynamicResource AccentButtonStyle}" />
+                <Button Content="Cancel" MinWidth="90" IsCancel="True" />
+            </StackPanel>
+        </StackPanel>
+
+        <TabControl x:Name="Tabs">
+            <TabItem Header="File">
+                <DockPanel Margin="4,10,4,4">
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                        <CheckBox x:Name="UseSubtitle" Content="Use a subtitle file" />
+                        <DockPanel Margin="0,6,0,0" IsEnabled="{Binding IsChecked, ElementName=UseSubtitle}">
+                            <Button DockPanel.Dock="Right" Content="Browse…" Margin="8,0,0,0" Click="BrowseSubtitle_Click" />
+                            <TextBox x:Name="SubtitleBox" />
+                        </DockPanel>
+                    </StackPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Add local files to this list:" Margin="0,0,0,6" />
+                    <StackPanel DockPanel.Dock="Right" Margin="8,0,0,0">
+                        <Button Content="Add…" MinWidth="90" Margin="0,0,0,6" Click="AddFiles_Click" />
+                        <Button Content="Remove" MinWidth="90" Click="RemoveFiles_Click" />
+                    </StackPanel>
+                    <ListBox x:Name="FileList" SelectionMode="Extended" />
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Disc">
+                <StackPanel Margin="4,10,4,4">
+                    <TextBlock Text="Disc type" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton x:Name="DiscDvd" Content="DVD" IsChecked="True" Margin="0,0,16,0" GroupName="disc" />
+                        <RadioButton x:Name="DiscBluray" Content="Blu-ray" Margin="0,0,16,0" GroupName="disc" />
+                        <RadioButton x:Name="DiscCd" Content="Audio CD" GroupName="disc" />
+                    </StackPanel>
+                    <CheckBox x:Name="NoMenus" Content="No disc menus" Margin="0,10,0,0" />
+                    <TextBlock Text="Disc device, folder (VIDEO_TS / BDMV) or ISO image" FontWeight="SemiBold" Margin="0,16,0,6" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Browse…" Margin="8,0,0,0" Click="BrowseDisc_Click" />
+                        <ComboBox x:Name="DriveBox" IsEditable="True" />
+                    </DockPanel>
+                    <TextBlock Text="Starting position" FontWeight="SemiBold" Margin="0,16,0,6" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Title / track:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBox x:Name="DiscTitle" Width="70" Text="0" Margin="0,0,16,0" />
+                        <TextBlock Text="Chapter:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBox x:Name="DiscChapter" Width="70" Text="0" />
+                    </StackPanel>
+                    <TextBlock Text="Encrypted commercial Blu-ray discs are not supported." Margin="0,14,0,0" Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Network">
+                <StackPanel Margin="4,10,4,4">
+                    <TextBlock Text="Please enter a network URL:" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <ComboBox x:Name="UrlBox" IsEditable="True" />
+                    <TextBlock Margin="0,12,0,0" Opacity="0.75" TextWrapping="Wrap" LineHeight="20">
+                        Examples:<LineBreak />
+                        https://www.example.com/stream.m3u8<LineBreak />
+                        rtsp://server.example.org:554/live<LineBreak />
+                        rtmp://server.example.org/app/stream<LineBreak />
+                        udp://@:1234 · rtp://@239.0.0.1:5004<LineBreak />
+                        smb://server/share/movie.mkv · \\server\share\movie.mkv
+                    </TextBlock>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Capture Device">
+                <StackPanel Margin="4,10,4,4">
+                    <TextBlock Text="Capture mode" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <ComboBox x:Name="CaptureMode" SelectedIndex="0" SelectionChanged="CaptureMode_SelectionChanged">
+                        <ComboBoxItem Content="DirectShow (webcam, capture card, microphone)" />
+                        <ComboBoxItem Content="Desktop" />
+                    </ComboBox>
+                    <StackPanel x:Name="DshowPanel" Margin="0,12,0,0">
+                        <TextBlock Text="Video device name (empty = default)" Margin="0,0,0,4" />
+                        <TextBox x:Name="VideoDevice" />
+                        <TextBlock Text="Audio device name (empty = default, 'none' = no audio)" Margin="0,10,0,4" />
+                        <TextBox x:Name="AudioDevice" />
+                        <TextBlock Text="Device names are listed in Windows Device Manager (Cameras / Sound inputs)." Margin="0,10,0,0" Opacity="0.7" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel x:Name="DesktopPanel" Margin="0,12,0,0" Visibility="Collapsed" Orientation="Horizontal">
+                        <TextBlock Text="Frame rate:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="DesktopFps" Width="70" Text="30" />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

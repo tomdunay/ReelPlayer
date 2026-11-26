@@ -1,0 +1,85 @@
+<UserControl x:Class="ReelPlayer.App.Views.PlaylistPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+             Background="{DynamicResource LayerFillColorDefaultBrush}">
+    <DockPanel>
+        <DockPanel DockPanel.Dock="Top" Margin="10,8,10,4">
+            <TextBlock x:Name="CountText" DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="12"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            <TextBlock Text="Playlist" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
+        </DockPanel>
+
+        <Grid DockPanel.Dock="Top" Margin="8,2,8,6">
+            <TextBox x:Name="SearchBox" TextChanged="SearchBox_TextChanged" />
+            <TextBlock Text="Search playlist" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text.Length, ElementName=SearchBox}" Value="0">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="6,4">
+            <Button Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="Add files" Tag="OpenMultiple" Click="Action_Click" />
+            <Button Style="{StaticResource IconButton}" Content="&#xE8B7;" ToolTip="Add folder" Tag="OpenFolder" Click="Action_Click" />
+            <Button Style="{StaticResource IconButton}" Content="&#xE738;" ToolTip="Remove selected (Delete)" Click="Remove_Click" />
+            <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="Clear playlist" Click="Clear_Click" />
+            <Button x:Name="SortButton" Style="{StaticResource IconButton}" Content="&#xE8CB;" ToolTip="Sort" Click="Sort_Click">
+                <Button.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="By title" Tag="title" Click="SortItem_Click" />
+                        <MenuItem Header="By title (descending)" Tag="title-desc" Click="SortItem_Click" />
+                        <MenuItem Header="By duration" Tag="duration" Click="SortItem_Click" />
+                        <MenuItem Header="By path" Tag="path" Click="SortItem_Click" />
+                        <MenuItem Header="Random" Tag="random" Click="SortItem_Click" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
+            <Button Style="{StaticResource IconButton}" Content="&#xE74E;" ToolTip="Save playlist" Tag="SavePlaylist" Click="Action_Click" />
+        </StackPanel>
+
+        <ListView x:Name="List" SelectionMode="Extended" AllowDrop="True" BorderThickness="0" Background="Transparent"
+                  MouseDoubleClick="List_MouseDoubleClick" KeyDown="List_KeyDown"
+                  PreviewMouseLeftButtonDown="List_PreviewMouseLeftButtonDown" PreviewMouseMove="List_PreviewMouseMove"
+                  DragOver="List_DragOver" Drop="List_Drop">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem" BasedOn="{StaticResource GridRowItem}">
+                    <Setter Property="ToolTip" Value="{Binding Location}" />
+                                        <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                            <Setter Property="FontWeight" Value="Bold" />
+                            <Setter Property="Foreground" Value="{StaticResource SeekFillBrush}" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.View>
+                <GridView AllowsColumnReorder="False">
+                    <GridViewColumn Header="Title" Width="200">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Duration" Width="80" DisplayMemberBinding="{Binding DurationText}" />
+                    <GridViewColumn Header="Path" Width="260">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Location}" TextTrimming="CharacterEllipsis" Opacity="0.7" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</UserControl>

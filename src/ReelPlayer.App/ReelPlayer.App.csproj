@@ -1,0 +1,66 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows 10 2004+ API surface for System Media Transport Controls. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>ReelPlayer</AssemblyName>
+    <RootNamespace>ReelPlayer.App</RootNamespace>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>Reel Player</Product>
+    <Description>Reel Player media player</Description>
+    <Version>1.0.0</Version>
+    <Copyright>Reel Player contributors. Uses libVLC (LGPL-2.1-or-later).</Copyright>
+    <!-- Fluent ThemeMode is marked experimental in WPF. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Release'">true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.10.2" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
+  </ItemGroup>
+
+  <!-- Ship only the libVLC build matching the target runtime (the package copies all three for AnyCPU). -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <VlcWindowsX64Enabled>false</VlcWindowsX64Enabled>
+    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+    <VlcWindowsX64Enabled Condition="'$(RuntimeIdentifier)' == 'win-x64'">true</VlcWindowsX64Enabled>
+    <VlcWindowsX86Enabled Condition="'$(RuntimeIdentifier)' == 'win-x86'">true</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled Condition="'$(RuntimeIdentifier)' == 'win-arm64'">true</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+
+  <!-- Not shipped: import libraries (.lib), audio visualizations, video wall/clone splitters. -->
+  <ItemGroup>
+    <VlcWindowsX64ExcludeFiles Include="libvlc.lib;libvlccore.lib;plugins\visualization\%2A;plugins\video_splitter\%2A" />
+    <VlcWindowsX86ExcludeFiles Include="libvlc.lib;libvlccore.lib;plugins\visualization\%2A;plugins\video_splitter\%2A" />
+    <VlcWindowsArm64ExcludeFiles Include="libvlc.lib;libvlccore.lib;plugins\visualization\%2A;plugins\video_splitter\%2A" />
+  </ItemGroup>
+
+  <!-- libVLC loads its plugins from disk, so its folder must stay next to the exe rather than inside the single-file bundle. -->
+  <Target Name="KeepLibVlcOutOfBundle" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
+                             Condition="$([System.String]::Copy('%(ResolvedFileToPublish.RelativePath)').StartsWith('libvlc'))"
+                             ExcludeFromSingleFile="true" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\logo.png" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReelPlayer.Core\ReelPlayer.Core.csproj" />
+  </ItemGroup>
+
+</Project>

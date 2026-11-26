@@ -1,0 +1,43 @@
+Reel Player — Third-Party Notices
+==================================
+
+Reel Player includes or dynamically loads the following third-party components.
+
+------------------------------------------------------------------------------
+libVLC / libVLCcore and VLC plugins  (version 3.0.x)
+------------------------------------------------------------------------------
+Copyright (C) the VideoLAN team and VLC authors.
+License: GNU Lesser General Public License, version 2.1 or later (LGPL-2.1-or-later).
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+Source code: https://code.videolan.org/videolan/vlc
+
+The libVLC binaries (libvlc.dll, libvlccore.dll and the plugins\ folder) are
+distributed unmodified, exactly as published in the VideoLAN.LibVLC.Windows
+NuGet package, and are loaded dynamically at run time. You may replace them
+with your own build of a compatible libVLC 3.x. Individual VLC plugins and
+the libraries they bundle (for example FFmpeg/libavcodec, libdvdnav, libbluray,
+libass, FreeType) are under their own licenses (mostly LGPL-2.1+ / GPL-
+compatible); see https://www.videolan.org/legal.html for details.
+
+Reel Player is not affiliated with or endorsed by VideoLAN. "VLC" and
+"VideoLAN" are trademarks of the VideoLAN non-profit organisation.
+
+------------------------------------------------------------------------------
+LibVLCSharp and LibVLCSharp.WPF
+------------------------------------------------------------------------------
+Copyright (C) VideoLAN and contributors.
+License: LGPL-2.1-or-later.
+https://code.videolan.org/videolan/LibVLCSharp
+
+------------------------------------------------------------------------------
+CommunityToolkit.Mvvm
+------------------------------------------------------------------------------
+Copyright (c) .NET Foundation and Contributors.
+License: MIT. https://github.com/CommunityToolkit/dotnet/blob/main/License.md
+
+------------------------------------------------------------------------------
+.NET runtime and WPF (bundled in self-contained builds)
+------------------------------------------------------------------------------
+Copyright (c) .NET Foundation and Contributors.
+License: MIT. https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+         https://github.com/dotnet/wpf/blob/main/LICENSE.TXT
