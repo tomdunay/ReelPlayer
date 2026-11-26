@@ -43,6 +43,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private int _timelineTick;
     private string? _recordPath;
     private Equalizer? _equalizer;
+    private RestartState? _restart;
+    private bool _rebuilding;
+    private bool _rebuildAgain;
+    private string? _pendingFilterOsd;
+    private bool _pauseWhenPictureShows;
+
+    private sealed record RestartState(bool WasPaused, string? Osd, long AudioDelayUs, long SpuDelayUs);
 
     public MainViewModel(SettingsService settings, PlayerService engine, MediaControls smtc)
     {
@@ -61,10 +68,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Engine.StateChanged += () => OnUi(UpdateState);
         Engine.EndReached += () => OnUi(OnEndReached);
         Engine.Error += () => OnUi(OnError);
-        Engine.Buffering += cache => OnUi(() => { if (cache < 100f && !IsPlaying) StatusText = $"Buffering {cache:0}%"; });
+        Engine.Buffering += cache => OnUi(() => { if (cache < 99.5f && Engine.State is VLCState.Opening or VLCState.Buffering) StatusText = $"Buffering {cache:0}%"; });
         Engine.LengthChanged += len => OnUi(() => { LengthMs = len; if (Playlist.Current is { } c && len > 0) c.DurationMs = len; });
         Engine.TracksChanged += () => OnUi(RefreshTracks);
-        Engine.VoutChanged += count => OnUi(() => { HasVideo = count > 0; UpdateKeepAwake(); });
+        Engine.VoutChanged += count => OnUi(() =>
+        {
+            HasVideo = count > 0;
+            UpdateKeepAwake();
+            if (count > 0) OnVoutForPendingPause();
+        });
         Engine.SnapshotTaken += file => OnUi(() => ShowOsd("Snapshot saved: " + Path.GetFileName(file)));
 
         _timer = new DispatcherTimer(DispatcherPriority.Background, _ui) { Interval = TimeSpan.FromMilliseconds(250) };
@@ -193,6 +205,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public event Action<MediaItem, long>? ResumeOffered;
     public event Action? OpenFileRequested;
 
+    /// <summary>Raised on the UI thread after <see cref="Engine"/> created a new MediaPlayer.</summary>
+    public event Action? PlayerReplaced;
+
     public void ShowOsd(string text) => OsdRequested?.Invoke(text);
 
     // ----- Opening -----
@@ -251,6 +266,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         SaveResumePosition();
         Playlist.SetCurrent(item);
         _appliedForCurrentMedia = false;
+        _restart = null;
+        _pauseWhenPictureShows = false;
         if (IsRecording) { IsRecording = false; _recordPath = null; }
 
         Title = item.Title;
@@ -266,30 +283,68 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Reopens the current item at the current time (needed when per-media options change).</summary>
-    public void RestartCurrent()
+    public void RestartCurrent(string? osd = null)
     {
         if (Playlist.Current is not { } item || !Engine.IsActive) return;
         var pos = Player.Time;
         _appliedForCurrentMedia = false;
+        _restart = CaptureRestart(osd);
         Engine.Open(item, Math.Max(0, pos), BuildExtraOptions());
+    }
+
+    /// <summary>What a reopen must preserve: pause state and A/V delays. It also replaces the title OSD.</summary>
+    private RestartState CaptureRestart(string? osd) =>
+        new(Engine.State == VLCState.Paused, osd, Player.AudioDelay, Player.SpuDelay);
+
+    /// <summary>
+    /// Rotate/flip and sharpen need a new libVLC engine (see <see cref="PlayerService.VideoFilterOptions"/>).
+    /// Rebuilds it, then reopens whatever was playing at the same position. Rapid repeated changes are coalesced.
+    /// </summary>
+    private async void ApplyVideoFilters(string? osd)
+    {
+        if (_rebuilding)
+        {
+            _rebuildAgain = true;
+            _pendingFilterOsd = osd;
+            return;
+        }
+        _rebuilding = true;
+        var item = Engine.IsActive ? Playlist.Current : null;
+        var pos = item is null ? 0 : Math.Max(0, Player.Time);
+        var restart = CaptureRestart(osd);
+        try
+        {
+            do
+            {
+                _rebuildAgain = false;
+                await Engine.RebuildAsync(PlayerService.VideoFilterOptions(Transforms[TransformIndex].Type, Sharpen, SharpenSigma));
+                restart = restart with { Osd = _pendingFilterOsd ?? restart.Osd };
+                _pendingFilterOsd = null;
+            } while (_rebuildAgain);
+
+            PlayerReplaced?.Invoke();   // the window moves its video surface to the new player
+            Engine.ReleaseRetired();
+            if (item is not null)
+            {
+                _appliedForCurrentMedia = false;
+                _restart = restart;
+                Engine.Open(item, pos, BuildExtraOptions());
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Rebuild engine");
+            ErrorRaised?.Invoke("Could not apply the video filter: " + ex.Message);
+        }
+        finally
+        {
+            _rebuilding = false;
+        }
     }
 
     private List<string> BuildExtraOptions()
     {
         var opts = new List<string>();
-        var filters = new List<string>();
-        if (Transforms[TransformIndex].Type is { } t)
-        {
-            filters.Add("transform");
-            opts.Add(":transform-type=" + t);
-        }
-        if (Sharpen)
-        {
-            filters.Add("sharpen");
-            opts.Add(":sharpen-sigma=" + SharpenSigma.ToString("0.###", CultureInfo.InvariantCulture));
-        }
-        if (filters.Count > 0) opts.Add(":video-filter=" + string.Join(":", filters));
-
         if (IsRecording && _recordPath is not null)
         {
             var dst = _recordPath.Replace("'", "\\'");
@@ -525,13 +580,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ShowOsd("Deinterlace: " + DeinterlaceModes[index].Name);
     }
 
-    public void SetVideoFilters(int transformIndex, bool sharpen, double sigma)
+    public void SetVideoFilters(int transformIndex, bool sharpen, double sigma, string? osd = null)
     {
         var changed = transformIndex != TransformIndex || sharpen != Sharpen || Math.Abs(sigma - SharpenSigma) > 0.0001;
         TransformIndex = transformIndex;
         Sharpen = sharpen;
         SharpenSigma = sigma;
-        if (changed) RestartCurrent();
+        if (changed) ApplyVideoFilters(osd);
+    }
+
+    /// <summary>Steps the picture 0° → 90° → 180° → 270° → 0° (a flip/transpose setting goes to 90°).</summary>
+    public void RotateVideo()
+    {
+        var next = TransformIndex switch { 1 => 2, 2 => 3, 3 => 0, _ => 1 };
+        var label = "Rotation: " + (next == 0 ? "none" : Transforms[next].Name.Replace("Rotate ", ""));
+        SetVideoFilters(next, Sharpen, SharpenSigma, label);
+        // When nothing is playing the setting is kept for the next file; say so on screen either way.
+        ShowOsd(label);
     }
 
     public void SetAdjust(bool enabled, float brightness, float contrast, float hue, float saturation, float gamma)
@@ -721,8 +786,54 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         Title = item?.Title ?? Title;
         Smtc.UpdateMetadata(Title, artist, Player.VideoTrackCount > 0 || HasVideo, artwork);
-        ShowOsd(Title);
+        // A rebuilt engine starts with default picture settings; re-apply the user's.
+        if (AspectIndex > 0) Player.AspectRatio = AspectRatios[AspectIndex];
+        if (CropIndex > 0) Player.CropGeometry = CropRatios[CropIndex];
+        if (ZoomIndex > 0) Player.Scale = Zooms[ZoomIndex].Scale;
+
+        if (_restart is { } restart)
+        {
+            _restart = null;
+            if (restart.AudioDelayUs != 0) Player.SetAudioDelay(restart.AudioDelayUs);
+            if (restart.SpuDelayUs != 0) Player.SetSpuDelay(restart.SpuDelayUs);
+            if (restart.WasPaused) PauseOncePictureShows();
+            if (restart.Osd is not null) ShowOsd(restart.Osd);
+        }
+        else
+        {
+            ShowOsd(Title);
+        }
         RefreshTracks();
+    }
+
+    /// <summary>
+    /// Restores the paused state after a reopen. Pausing straight away leaves the video area black (nothing has been
+    /// drawn yet), so play muted until libVLC has a video output and a frame on screen, then pause.
+    /// </summary>
+    private void PauseOncePictureShows()
+    {
+        if (Player.VideoTrackCount == 0)
+        {
+            Player.SetPause(true);
+            return;
+        }
+        Player.Mute = true;
+        _pauseWhenPictureShows = true;
+        if (Player.VoutCount > 0) OnVoutForPendingPause();
+    }
+
+    private void OnVoutForPendingPause()
+    {
+        if (!_pauseWhenPictureShows) return;
+        _pauseWhenPictureShows = false;
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            Player.SetPause(true);
+            Player.Mute = IsMuted;
+        };
+        timer.Start();
     }
 
     private void OnEndReached()

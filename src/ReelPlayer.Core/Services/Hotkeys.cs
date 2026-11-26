@@ -38,6 +38,7 @@ public static class HotkeyActions
         new("AudioDelayDown", "Audio delay -50 ms", new[] { "J" }),
         new("AudioDelayUp", "Audio delay +50 ms", new[] { "K" }),
         new("Snapshot", "Take snapshot", new[] { "Shift+S" }),
+        new("RotateVideo", "Rotate video 90° clockwise", new[] { "Ctrl+R" }),
         new("ShowTime", "Show time", new[] { "T" }),
         new("CycleLoop", "Cycle loop mode", new[] { "L" }),
         new("TogglePlaylist", "Toggle playlist", new[] { "Ctrl+L" }),

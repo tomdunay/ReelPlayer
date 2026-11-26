@@ -9,7 +9,7 @@ A Windows media player with a VLC-style interface. Playback runs on **libVLC 3**
 - **Interface:** menu bar (Media · Playback · Audio · Video · Subtitle · Tools · View · Help), seek bar with hover time and chapter marks, and a control bar. The playlist panel can be docked and supports search, drag-to-reorder and sorting. There is a status bar, a minimal mode (Ctrl+H) and a dark/light/system theme (WPF Fluent).
 - **Fullscreen:** a controller overlay that hides itself after 3 seconds, and an on-screen display for volume, seeking, speed, tracks and delays.
 - **Playback:** speed from 0.25× to 4×, frame stepping, jump to time, titles and chapters, loop (off/all/one), shuffle, resuming long files where you left off, and recording to `.ts`.
-- **Audio and video:** track selection, output device, stereo mode, and volume up to 200%. Also aspect ratio, crop, zoom, deinterlacing (10 modes), snapshots, a 10-band equalizer with presets, video adjustments (brightness, contrast, hue, saturation, gamma), and rotate/flip/sharpen.
+- **Audio and video:** track selection, output device, stereo mode, and volume up to 200%. Also aspect ratio, crop, zoom, deinterlacing (10 modes), snapshots, a 10-band equalizer with presets, video adjustments (brightness, contrast, hue, saturation, gamma), and rotate/flip/sharpen (Ctrl+R or Video › Rotate 90° turns the picture a quarter turn clockwise).
 - **Subtitles:** a matching subtitle file loads automatically. You can add a subtitle file, switch tracks, adjust delay, and set language, encoding, size, colour and outline.
 - **Opening media:** files, folders and playlists (M3U/M3U8/PLS/XSPF/CUE), discs, network URLs, DirectShow capture devices and desktop capture.
 - **Tools:** Media Information (metadata, codecs, live statistics), Track Synchronization, Messages (libVLC log with a verbosity filter), and Preferences with editable hotkeys.
@@ -79,7 +79,8 @@ Implementation notes:
 
 - **WPF airspace:** the video is a native window, so WPF can't draw over it directly. Overlays (OSD, fullscreen controller, error and resume bars) are placed inside `VideoView`'s content, which LibVLCSharp renders in a transparent window above the video.
 - **Threading:** libVLC events are marshalled to the UI thread, and nothing calls libVLC from inside its own callbacks. `Play`/`Stop` run on a worker thread so the UI never blocks.
-- **Per-media options:** rotate/flip, sharpen and recording are libVLC per-media options. Changing them reopens the current item at the same position.
+- **Video filters:** libVLC 3 ignores rotate/flip/sharpen when they're given per file, so changing them rebuilds the libVLC engine with the filter and reopens the current item at the same position, keeping pause state and A/V delays. Recording is a per-file option and only reopens the item.
+- **Letterbox:** WPF's Fluent theme puts a Mica backdrop behind windows, and DWM then shows black GDI pixels as transparent. The main window turns the backdrop off, and libVLC's video container gets a black background, so letterbox bars are black.
 
 ## Licensing
 

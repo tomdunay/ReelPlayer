@@ -47,36 +47,21 @@ public sealed class PlayerService : IDisposable
 {
     private readonly BlockingCollection<Action> _queue = new();
     private readonly Thread _worker;
+    private readonly List<string> _baseOptions;
+    private readonly List<(LibVLC Lib, MediaPlayer Player, Media? Media)> _retired = new();
     private Media? _media;
 
     public PlayerService(IEnumerable<string> libVlcOptions)
     {
-        LibVLC = new LibVLC(libVlcOptions.ToArray());
-        LibVLC.Log += (_, e) => Log.Add(new LogEntry(DateTime.Now, e.Level, e.Module ?? "", e.Message ?? ""));
-
-        Player = new MediaPlayer(LibVLC) { EnableKeyInput = false, EnableMouseInput = false };
-        Player.Opening += (_, _) => Opening?.Invoke();
-        Player.Playing += (_, _) => StateChanged?.Invoke();
-        Player.Paused += (_, _) => StateChanged?.Invoke();
-        Player.Stopped += (_, _) => StateChanged?.Invoke();
-        Player.EndReached += (_, _) => EndReached?.Invoke();
-        Player.EncounteredError += (_, _) => Error?.Invoke();
-        Player.Buffering += (_, e) => Buffering?.Invoke(e.Cache);
-        Player.LengthChanged += (_, e) => LengthChanged?.Invoke(e.Length);
-        Player.ESAdded += (_, _) => TracksChanged?.Invoke();
-        Player.ESDeleted += (_, _) => TracksChanged?.Invoke();
-        Player.ESSelected += (_, _) => TracksChanged?.Invoke();
-        Player.ChapterChanged += (_, _) => TracksChanged?.Invoke();
-        Player.TitleChanged += (_, _) => TracksChanged?.Invoke();
-        Player.Vout += (_, e) => VoutChanged?.Invoke(e.Count);
-        Player.SnapshotTaken += (_, e) => SnapshotTaken?.Invoke(e.Filename);
-
+        _baseOptions = libVlcOptions.ToList();
+        (LibVLC, Player) = CreateEngine(_baseOptions);
         _worker = new Thread(WorkLoop) { IsBackground = true, Name = "libVLC worker" };
         _worker.Start();
     }
 
-    public LibVLC LibVLC { get; }
-    public MediaPlayer Player { get; }
+    /// <summary>Current engine. Both are replaced by <see cref="RebuildAsync"/>, so don't cache them.</summary>
+    public LibVLC LibVLC { get; private set; }
+    public MediaPlayer Player { get; private set; }
     public LogBuffer Log { get; } = new();
     public MediaItem? CurrentItem { get; private set; }
     public Media? CurrentMedia => _media;
@@ -113,6 +98,97 @@ public sealed class PlayerService : IDisposable
         // libVLC itself loads movie.srt / movie.en.ass etc. next to movie.mkv; this switch turns that off.
         if (!s.AutoLoadSubtitles) opts.Add("--no-sub-autodetect-file");
         return opts;
+    }
+
+    /// <summary>
+    /// libVLC options for rotate/flip and sharpen. In libVLC 3 the video output only reads video filters from the
+    /// LibVLC instance (a per-media ":video-filter" is ignored), so these go to <see cref="RebuildAsync"/>.
+    /// </summary>
+    public static List<string> VideoFilterOptions(string? transformType, bool sharpen, double sharpenSigma)
+    {
+        var filters = new List<string>();
+        var opts = new List<string>();
+        if (!string.IsNullOrEmpty(transformType))
+        {
+            filters.Add("transform");
+            opts.Add("--transform-type=" + transformType);
+        }
+        if (sharpen)
+        {
+            filters.Add("sharpen");
+            opts.Add("--sharpen-sigma=" + sharpenSigma.ToString("0.###", CultureInfo.InvariantCulture));
+        }
+        if (filters.Count > 0) opts.Insert(0, "--video-filter=" + string.Join(":", filters));
+        return opts;
+    }
+
+    private (LibVLC, MediaPlayer) CreateEngine(IEnumerable<string> options)
+    {
+        var lib = new LibVLC(options.ToArray());
+        lib.Log += (_, e) => Log.Add(new LogEntry(DateTime.Now, e.Level, e.Module ?? "", e.Message ?? ""));
+
+        var mp = new MediaPlayer(lib) { EnableKeyInput = false, EnableMouseInput = false };
+        // After a rebuild the retired player may still raise events; only the current one is forwarded.
+        bool Current() => ReferenceEquals(mp, Player);
+        mp.Opening += (_, _) => { if (Current()) Opening?.Invoke(); };
+        mp.Playing += (_, _) => { if (Current()) StateChanged?.Invoke(); };
+        mp.Paused += (_, _) => { if (Current()) StateChanged?.Invoke(); };
+        mp.Stopped += (_, _) => { if (Current()) StateChanged?.Invoke(); };
+        mp.EndReached += (_, _) => { if (Current()) EndReached?.Invoke(); };
+        mp.EncounteredError += (_, _) => { if (Current()) Error?.Invoke(); };
+        mp.Buffering += (_, e) => { if (Current()) Buffering?.Invoke(e.Cache); };
+        mp.LengthChanged += (_, e) => { if (Current()) LengthChanged?.Invoke(e.Length); };
+        mp.ESAdded += (_, _) => { if (Current()) TracksChanged?.Invoke(); };
+        mp.ESDeleted += (_, _) => { if (Current()) TracksChanged?.Invoke(); };
+        mp.ESSelected += (_, _) => { if (Current()) TracksChanged?.Invoke(); };
+        mp.ChapterChanged += (_, _) => { if (Current()) TracksChanged?.Invoke(); };
+        mp.TitleChanged += (_, _) => { if (Current()) TracksChanged?.Invoke(); };
+        mp.Vout += (_, e) => { if (Current()) VoutChanged?.Invoke(e.Count); };
+        mp.SnapshotTaken += (_, e) => { if (Current()) SnapshotTaken?.Invoke(e.Filename); };
+        return (lib, mp);
+    }
+
+    /// <summary>
+    /// Stops playback and swaps in a fresh LibVLC + MediaPlayer created with the base options plus
+    /// <paramref name="extraOptions"/>. The old pair is kept until <see cref="ReleaseRetired"/>, so the caller can
+    /// first move its video surface to the new <see cref="Player"/>.
+    /// </summary>
+    public Task RebuildAsync(IEnumerable<string> extraOptions)
+    {
+        var options = _baseOptions.Concat(extraOptions).ToList();
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Post(() =>
+        {
+            try
+            {
+                Player.Stop();
+                var (lib, mp) = CreateEngine(options);
+                _retired.Add((LibVLC, Player, _media));
+                _media = null;
+                LibVLC = lib;
+                Player = mp;
+                done.SetResult();
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task;
+    }
+
+    /// <summary>Disposes engines replaced by <see cref="RebuildAsync"/>.</summary>
+    public void ReleaseRetired() => Post(DisposeRetired);
+
+    private void DisposeRetired()
+    {
+        foreach (var (lib, mp, media) in _retired)
+        {
+            mp.Dispose();
+            media?.Dispose();
+            lib.Dispose();
+        }
+        _retired.Clear();
     }
 
     private static int ParseColor(string hex)
@@ -179,6 +255,7 @@ public sealed class PlayerService : IDisposable
         Post(() => Player.Stop());
         _queue.CompleteAdding();
         _worker.Join(3000);
+        DisposeRetired();
         Player.Dispose();
         _media?.Dispose();
         LibVLC.Dispose();

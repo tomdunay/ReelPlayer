@@ -55,6 +55,14 @@ public partial class MainWindow : Window
         vm.ErrorRaised += ShowError;
         vm.ResumeOffered += OfferResume;
         vm.OpenFileRequested += () => RunAction("OpenFile");
+        vm.PlayerReplaced += () => VideoView.MediaPlayer = _vm.Player;
+        // Each time libVLC creates its video window (including after an engine rebuild), make its letterbox black.
+        vm.Engine.VoutChanged += count =>
+        {
+            if (count > 0)
+                Dispatcher.BeginInvoke(() => NativeMethods.BlackenVlcWindows(new System.Windows.Interop.WindowInteropHelper(this).Handle),
+                    DispatcherPriority.Background);
+        };
         vm.PropertyChanged += Vm_PropertyChanged;
         vm.Smtc.ButtonPressed += b => Dispatcher.BeginInvoke(() => OnMediaButton(b));
 
@@ -63,6 +71,7 @@ public partial class MainWindow : Window
         _resumeTimer.Tick += (_, _) => DismissResume();
 
         Loaded += OnLoaded;
+        SourceInitialized += (_, _) => NativeMethods.DisableBackdrop(new System.Windows.Interop.WindowInteropHelper(this).Handle);
         PreviewKeyDown += Window_PreviewKeyDown;
         Drop += Window_Drop;
         DragOver += Window_DragOver;
@@ -165,6 +174,7 @@ public partial class MainWindow : Window
                 case "CycleCrop": _vm.SetCrop(_vm.CropIndex + 1); break;
                 case "CycleZoom": _vm.SetZoom(_vm.ZoomIndex + 1); break;
                 case "Snapshot": _vm.TakeSnapshot(); break;
+                case "RotateVideo": _vm.RotateVideo(); break;
                 case "ShowTime":
                     ShowOsd(_vm.Engine.IsActive ? $"{TimeFormat.Format(_vm.Player.Time)} / {TimeFormat.Format(_vm.Player.Length)}" : "Stopped");
                     break;

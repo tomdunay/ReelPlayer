@@ -211,6 +211,7 @@ public class HotkeyMapTests
         Assert.Equal("SeekFwd300", map.Resolve("Ctrl+Right"));
         Assert.Equal("Faster", map.Resolve("]"));
         Assert.Equal("TogglePlaylist", map.Resolve("Ctrl+L"));
+        Assert.Equal("RotateVideo", map.Resolve("Ctrl+R"));
         Assert.Equal("Ctrl+O", map.GestureText("OpenFile"));
     }
 
@@ -308,6 +309,16 @@ public class SettingsTests
         Assert.Contains("--freetype-color=" + 0xFFFF00, opts);
         Assert.Contains("--sub-language=en", opts);
         Assert.Contains("--no-sub-autodetect-file", opts);
+    }
+
+    [Fact]
+    public void Video_filter_options()
+    {
+        Assert.Empty(PlayerService.VideoFilterOptions(null, false, 0.05));
+        Assert.Equal(new[] { "--video-filter=transform", "--transform-type=90" },
+            PlayerService.VideoFilterOptions("90", false, 0.05));
+        Assert.Equal(new[] { "--video-filter=transform:sharpen", "--transform-type=hflip", "--sharpen-sigma=0.5" },
+            PlayerService.VideoFilterOptions("hflip", true, 0.5));
     }
 }
 
