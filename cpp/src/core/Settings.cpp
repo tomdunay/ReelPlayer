@@ -130,6 +130,9 @@ AppSettings& SettingsService::load() {
         getDbl("WindowHeight", s.windowHeight);
         getBool("WindowMaximized", s.windowMaximized);
         getDbl("PlaylistWidth", s.playlistWidth);
+        getBool("ShowFileBrowser", s.showFileBrowser);
+        getDbl("FileBrowserWidth", s.fileBrowserWidth);
+        getWstr("FileBrowserDir", s.fileBrowserDir);
         getWstr("LastFolder", s.lastFolder);
         if (j.contains("LastPlaylist") && j["LastPlaylist"].is_array()) {
             for (const auto& el : j["LastPlaylist"]) {
@@ -190,6 +193,9 @@ bool SettingsService::save() const {
         j["WindowHeight"] = s.windowHeight;
         j["WindowMaximized"] = s.windowMaximized;
         j["PlaylistWidth"] = s.playlistWidth;
+        j["ShowFileBrowser"] = s.showFileBrowser;
+        j["FileBrowserWidth"] = s.fileBrowserWidth;
+        j["FileBrowserDir"] = s.fileBrowserDir.empty() ? json(nullptr) : json(toUtf8(s.fileBrowserDir));
         j["LastFolder"] = s.lastFolder.empty() ? json(nullptr) : json(toUtf8(s.lastFolder));
         json lp = json::array();
         for (const auto& item : s.lastPlaylist) lp.push_back(toUtf8(item));

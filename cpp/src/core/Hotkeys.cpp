@@ -39,6 +39,7 @@ const std::vector<HotkeyAction>& HotkeyActions::all() {
         { "SubSizeUp", "Larger subtitles", { "Alt+Up" } },
         { "SubSizeDown", "Smaller subtitles", { "Alt+Down" } },
         { "FitWindow", "Fit window to video", { "Ctrl+1" } },
+        { "FileBrowser", "Toggle file browser", { "Ctrl+B" } },
         { "AudioDelayDown", "Audio delay -50 ms", { "J" } },
         { "AudioDelayUp", "Audio delay +50 ms", { "K" } },
         { "Snapshot", "Take snapshot", { "Shift+S" } },

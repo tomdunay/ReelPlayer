@@ -41,6 +41,11 @@ const std::vector<std::wstring>& MediaFiles::playlistExtensions() {
     return exts;
 }
 
+bool MediaFiles::isVideo(std::wstring_view path) {
+    static const std::unordered_set<std::wstring> set(videoExtensions().begin(), videoExtensions().end());
+    return set.contains(getExtensionLower(path));
+}
+
 bool MediaFiles::isMedia(std::wstring_view path) {
     static const std::unordered_set<std::wstring> set = [] {
         std::unordered_set<std::wstring> s;

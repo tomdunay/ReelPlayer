@@ -98,8 +98,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
             if ((msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) &&
                 msg.hwnd != mainHwnd && IsChild(mainHwnd, msg.hwnd)) {
-                SendMessageW(mainHwnd, msg.message, msg.wParam, msg.lParam);
-                continue;
+                wchar_t cls[32] = {};
+                GetClassNameW(msg.hwnd, cls, 32);
+                // Let FileBrowserPanel handle Delete key for selected video; route all other shortcuts to MainWindow.
+                if (!(_wcsicmp(cls, L"ReelD2DFileBrowser") == 0 && msg.wParam == VK_DELETE)) {
+                    SendMessageW(mainHwnd, msg.message, msg.wParam, msg.lParam);
+                    continue;
+                }
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

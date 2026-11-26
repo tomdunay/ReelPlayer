@@ -24,7 +24,7 @@ enum CmdId : UINT {
     ID_OPEN_FILE = 1001, ID_OPEN_MULTI, ID_OPEN_FOLDER, ID_OPEN_DISC, ID_OPEN_NETWORK, ID_OPEN_CAPTURE, ID_SAVE_PLAYLIST, ID_QUIT,
     ID_SEEK_FWD10, ID_SEEK_BACK10, ID_JUMP_TIME, ID_RECORD, ID_AB_LOOP, ID_EXPORT_AB, ID_PLAY_PAUSE, ID_STOP, ID_PREV, ID_NEXT, ID_NEXT_FRAME, ID_PREV_FRAME,
     ID_VOL_UP, ID_VOL_DOWN, ID_MUTE,
-    ID_FULLSCREEN, ID_MINI_PLAYER, ID_FIT_WINDOW, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
+    ID_FULLSCREEN, ID_MINI_PLAYER, ID_FIT_WINDOW, ID_FILE_BROWSER, ID_ALWAYS_ON_TOP, ID_ROTATE, ID_SNAPSHOT,
     ID_ADD_SUB, ID_SUB_DELAY_DOWN, ID_SUB_DELAY_UP, ID_SUB_SIZE_UP, ID_SUB_SIZE_DOWN, ID_SUB_APPEARANCE,
     ID_EFFECTS, ID_SYNC, ID_MEDIA_INFO, ID_CODEC_INFO, ID_MESSAGES, ID_PREFERENCES,
     ID_TOGGLE_PLAYLIST, ID_MINIMAL, ID_TOGGLE_STATUSBAR,
@@ -151,6 +151,34 @@ bool MainWindow::create() {
         _menuBar->setMenus(std::move(topMenus));
     }
 
+    // Left-hand docked File Browser panel (pure Direct2D directory tree, video-only, resizable)
+    _fileBrowser = std::make_unique<FileBrowserPanel>(_d2d);
+    _fileBrowser->create(_hwnd, _hInst);
+    _fileBrowser->setCallbacks({
+        [this](const std::wstring& path) {
+            openItems({ std::make_shared<MediaItem>(path) }, true);
+        },
+        [this](const std::wstring& path) {
+            if (auto cur = _playlist.current(); cur && cur->isFile() && _wcsicmp(cur->location.c_str(), path.c_str()) == 0) {
+                stopPlayback();
+                Sleep(140);
+            }
+        },
+        [this](const std::wstring& path) {
+            showOsd(L"Moved to Recycle Bin: " + fs::path(path).filename().wstring());
+        },
+        [this](const std::wstring& dir) {
+            _settings.current().fileBrowserDir = dir;
+        },
+        [this](int newWidthDip) {
+            _settings.current().fileBrowserWidth = static_cast<double>(newWidthDip);
+            layoutChildren();
+        },
+        [this]() {
+            setFileBrowser(false);
+        }
+    });
+
     // Video host child HWND
     _videoHost = CreateWindowExW(0, L"ReelVideoHost", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                                  0, 0, 640, 400, _hwnd, nullptr, _hInst, this);
@@ -214,6 +242,7 @@ bool MainWindow::create() {
 
     applyTheme();
     if (s.alwaysOnTop) SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    if (s.showFileBrowser) setFileBrowser(true);
 
     SetTimer(_hwnd, TimerTickId, 250, nullptr);
     layoutChildren();
@@ -337,6 +366,8 @@ void MainWindow::buildMenus() {
     addItem(mTools, ID_PREFERENCES, L"&Preferences...\tCtrl+P");
 
     HMENU mView = addSub(_mainMenu, L"V&iew");
+    addItem(mView, ID_FILE_BROWSER, L"&File Browser\tCtrl+B");
+    addSep(mView);
     addItem(mView, ID_FIT_WINDOW, L"Fit &Window to Video\tCtrl+1");
     addItem(mView, ID_MINI_PLAYER, L"&Picture-in-Picture\tShift+P");
     addItem(mView, ID_MINIMAL, L"&Minimal Interface\tCtrl+H");
@@ -421,6 +452,7 @@ void MainWindow::refreshMenuStates() {
 
     chk(ID_FULLSCREEN, _isFullscreen);
     chk(ID_MINI_PLAYER, _isMiniPlayer);
+    chk(ID_FILE_BROWSER, _showFileBrowser);
     chk(ID_ALWAYS_ON_TOP, _settings.current().alwaysOnTop);
     chk(ID_MINIMAL, _isMinimal);
     chk(ID_RECORD, _isRecording);
@@ -491,7 +523,16 @@ void MainWindow::layoutChildren() {
 
     int menuH = (_isFullscreen || _isMiniPlayer || _isMinimal) ? 0 : static_cast<int>(std::lround(D2DMenuBar::BarHeight * scale));
     int barH = (_isFullscreen || _isMiniPlayer) ? 0 : static_cast<int>(std::lround(D2DControlBar::BarHeight * scale));
-    int vidW = std::max<int>(1, w);
+    int browserW = 0;
+    if (_fileBrowser && _showFileBrowser && !_isFullscreen && !_isMiniPlayer && !_isMinimal) {
+        int desired = static_cast<int>(std::lround(
+            std::clamp(_settings.current().fileBrowserWidth,
+                       static_cast<double>(FileBrowserPanel::MinWidthDip),
+                       static_cast<double>(FileBrowserPanel::MaxWidthDip)) * scale));
+        int maxAllowed = std::max(0, w - static_cast<int>(std::lround(240.0f * scale)));
+        browserW = std::min(desired, maxAllowed);
+    }
+    int vidW = std::max<int>(1, w - browserW);
     int vidH = std::max<int>(1, h - menuH - barH);
 
     if (_menuBar) {
@@ -502,16 +543,24 @@ void MainWindow::layoutChildren() {
             ShowWindow(_menuBar->hwnd(), SW_HIDE);
         }
     }
+    if (_fileBrowser) {
+        if (browserW > 0) {
+            MoveWindow(_fileBrowser->hwnd(), 0, menuH, browserW, std::max<int>(1, h - menuH), TRUE);
+            ShowWindow(_fileBrowser->hwnd(), SW_SHOW);
+        } else {
+            ShowWindow(_fileBrowser->hwnd(), SW_HIDE);
+        }
+    }
     if (_dockedBar) {
         if (_isFullscreen || _isMiniPlayer) ShowWindow(_dockedBar->hwnd(), SW_HIDE);
         else {
-            MoveWindow(_dockedBar->hwnd(), 0, menuH + vidH, w, barH, TRUE);
+            MoveWindow(_dockedBar->hwnd(), browserW, menuH + vidH, vidW, barH, TRUE);
             ShowWindow(_dockedBar->hwnd(), SW_SHOW);
         }
     }
-    if (_videoHost) MoveWindow(_videoHost, 0, menuH, vidW, vidH, TRUE);
+    if (_videoHost) MoveWindow(_videoHost, browserW, menuH, vidW, vidH, TRUE);
     if (_idlePanel) {
-        MoveWindow(_idlePanel->hwnd(), 0, menuH, vidW, vidH, TRUE);
+        MoveWindow(_idlePanel->hwnd(), browserW, menuH, vidW, vidH, TRUE);
         ShowWindow(_idlePanel->hwnd(), _isIdle ? SW_SHOW : SW_HIDE);
     }
     syncOverlays();
@@ -601,6 +650,7 @@ void MainWindow::runAction(const std::string& action) {
     else if (action == "Fullscreen") setFullscreen(!_isFullscreen);
     else if (action == "MiniPlayer") setMiniPlayer(!_isMiniPlayer);
     else if (action == "FitWindow") fitWindowToVideo(true);
+    else if (action == "FileBrowser") setFileBrowser(!_showFileBrowser);
     else if (action == "SubSizeUp") stepSubtitleSize(1);
     else if (action == "SubSizeDown") stepSubtitleSize(-1);
     else if (action == "SubAppearance") openSubtitleAppearance();
@@ -718,6 +768,17 @@ void MainWindow::playItem(const MediaItemPtr& item, int64_t startMs, bool offerR
     _appliedForCurrentMedia = false;
     _fittedForCurrentMedia = false;
     _restart.reset();
+    if (_fileBrowser) _fileBrowser->setActiveFile(item->isFile() ? item->location : L"");
+    if (item->isFile()) {
+        fs::path p(item->location);
+        if (p.has_parent_path()) {
+            std::wstring dir = p.parent_path().wstring();
+            if (_wcsicmp(_settings.current().fileBrowserDir.c_str(), dir.c_str()) != 0) {
+                _settings.current().fileBrowserDir = dir;
+                if (_showFileBrowser && _fileBrowser) _fileBrowser->openDirectory(dir);
+            }
+        }
+    }
     if (_isRecording) { _isRecording = false; _recordPath.clear(); }
 
     _title = item->title;
@@ -1316,6 +1377,30 @@ void MainWindow::openSubtitleAppearance() {
     else showOsd(L"Subtitle appearance saved");
 }
 
+void MainWindow::setFileBrowser(bool on) {
+    if (on && _isFullscreen) setFullscreen(false);
+    if (on && _isMiniPlayer) setMiniPlayer(false);
+    if (on && _isMinimal) _isMinimal = false;
+    _showFileBrowser = on;
+    _settings.current().showFileBrowser = on;
+    if (on && _fileBrowser) {
+        std::wstring dir = _settings.current().fileBrowserDir;
+        std::error_code ec;
+        if (dir.empty() || !fs::exists(fs::path(dir), ec)) {
+            if (auto cur = _playlist.current(); cur && cur->isFile()) {
+                fs::path p(cur->location);
+                if (p.has_parent_path() && fs::exists(p.parent_path(), ec)) dir = p.parent_path().wstring();
+            }
+        }
+        if (dir.empty() || !fs::exists(fs::path(dir), ec)) dir = _settings.current().lastFolder;
+        if (dir.empty() || !fs::exists(fs::path(dir), ec)) dir = SettingsService::defaultVideosFolder();
+        if (auto cur = _playlist.current(); cur && cur->isFile()) _fileBrowser->setActiveFile(cur->location);
+        _fileBrowser->openDirectory(dir);
+    }
+    layoutChildren();
+    saveState();
+}
+
 void MainWindow::setMinimal(bool on) {
     _isMinimal = on;
     if (!_isFullscreen) layoutChildren();
@@ -1328,6 +1413,7 @@ void MainWindow::applyTheme() {
     WinInterop::setAppDarkMode(_darkTheme);
     WinInterop::setDarkTitleBar(_hwnd, _darkTheme);
     if (_menuBar) _menuBar->setDarkTheme(_darkTheme);
+    if (_fileBrowser) _fileBrowser->setDarkTheme(_darkTheme);
     pushControlBarState();
 }
 
@@ -1827,6 +1913,7 @@ LRESULT MainWindow::handleMainMsg(UINT msg, WPARAM wp, LPARAM lp) {
                 case ID_FULLSCREEN: runAction("Fullscreen"); break;
                 case ID_MINI_PLAYER: runAction("MiniPlayer"); break;
                 case ID_FIT_WINDOW: runAction("FitWindow"); break;
+                case ID_FILE_BROWSER: runAction("FileBrowser"); break;
                 case ID_ALWAYS_ON_TOP: runAction("AlwaysOnTop"); break;
                 case ID_ROTATE: runAction("RotateVideo"); break;
                 case ID_SNAPSHOT: runAction("Snapshot"); break;

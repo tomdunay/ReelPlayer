@@ -45,6 +45,7 @@ add_executable(ReelPlayer WIN32
     src/win/WinInterop.cpp
     src/win/MediaControls.cpp
     src/ui/D2DControls.cpp
+    src/ui/FileBrowserPanel.cpp
     src/ui/MainWindow.cpp
     src/ui/Dialogs.cpp
     resources/app.rc

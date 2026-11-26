@@ -13,6 +13,7 @@ public:
     static const std::vector<std::wstring>& subtitleExtensions();
     static const std::vector<std::wstring>& playlistExtensions();
 
+    static bool isVideo(std::wstring_view path);
     static bool isMedia(std::wstring_view path);
     static bool isSubtitle(std::wstring_view path);
     static bool isPlaylist(std::wstring_view path);

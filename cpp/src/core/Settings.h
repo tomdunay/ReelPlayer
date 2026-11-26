@@ -57,6 +57,9 @@ struct AppSettings {
     double windowHeight = 600;
     bool windowMaximized = false;
     double playlistWidth = 320;
+    bool showFileBrowser = false;
+    double fileBrowserWidth = 280;
+    std::wstring fileBrowserDir;
     std::wstring lastFolder;
     std::vector<std::wstring> lastPlaylist;
     int lastPlaylistIndex = -1;

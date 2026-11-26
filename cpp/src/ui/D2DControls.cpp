@@ -186,15 +186,94 @@ void D2DMenuBar::paint() {
     if (_rt->EndDraw() == D2DERR_RECREATE_TARGET) { safeRelease(_brush); safeRelease(_rt); }
 }
 
+static thread_local D2DMenuBar* g_activeMenuBar = nullptr;
+static thread_local HHOOK g_menuHook = nullptr;
+
+int D2DMenuBar::hitTestMenu(POINT screenPt) const {
+    if (!_hwnd) return -1;
+    RECT barRc{};
+    GetWindowRect(_hwnd, &barRc);
+    if (!PtInRect(&barRc, screenPt)) return -1;
+    POINT c = screenPt;
+    ScreenToClient(_hwnd, &c);
+    float scale = dpiScaleFor(_hwnd);
+    float x = static_cast<float>(c.x) / scale;
+    for (int i = 0; i < static_cast<int>(_rects.size()); ++i) {
+        if (x >= _rects[i].left - 1.5f && x <= _rects[i].right + 1.5f) return i;
+    }
+    return -1;
+}
+
+LRESULT CALLBACK D2DMenuBar::menuHookProc(int code, WPARAM wp, LPARAM lp) {
+    if (code == MSGF_MENU && g_activeMenuBar && lp) {
+        auto* m = reinterpret_cast<MSG*>(lp);
+        auto* self = g_activeMenuBar;
+        if (m->message == WM_MOUSEMOVE) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            if (pt.x != self->_lastHookPt.x || pt.y != self->_lastHookPt.y) {
+                self->_lastHookPt = pt;
+                RECT barRc{};
+                GetWindowRect(self->_hwnd, &barRc);
+                if (PtInRect(&barRc, pt)) {
+                    int idx = self->hitTestMenu(pt);
+                    if (idx >= 0 && idx != self->_openIdx) {
+                        self->_nextOpenIdx = idx;
+                        EndMenu();
+                    } else if (idx < 0 && !self->_rects.empty()) {
+                        // Only auto-close if cursor moved well past the last menu label into empty bar space
+                        POINT c = pt;
+                        ScreenToClient(self->_hwnd, &c);
+                        float x = static_cast<float>(c.x) / dpiScaleFor(self->_hwnd);
+                        if (x > self->_rects.back().right + 12.0f || x < self->_rects.front().left - 12.0f) {
+                            EndMenu();
+                        }
+                    }
+                } else {
+                    HWND under = WindowFromPoint(pt);
+                    wchar_t cls[32] = {};
+                    if (under) GetClassNameW(under, cls, 32);
+                    bool onPopup = (_wcsicmp(cls, L"#32768") == 0);
+                    RECT bridge = barRc;
+                    bridge.bottom += 6;
+                    if (!onPopup && !PtInRect(&bridge, pt)) {
+                        EndMenu();
+                    }
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_menuHook, code, wp, lp);
+}
+
 void D2DMenuBar::openMenuAt(int index) {
     if (index < 0 || index >= static_cast<int>(_menus.size())) return;
-    _openIdx = index;
-    redraw();
-    float scale = dpiScaleFor(_hwnd);
-    POINT pt = { static_cast<LONG>(_rects[index].left * scale), static_cast<LONG>(BarHeight * scale) };
-    ClientToScreen(_hwnd, &pt);
-    TrackPopupMenu(_menus[index].second, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, _owner, nullptr);
+    if (g_activeMenuBar) return;
+
+    g_activeMenuBar = this;
+    g_menuHook = SetWindowsHookExW(WH_MSGFILTER, &D2DMenuBar::menuHookProc, nullptr, GetCurrentThreadId());
+
+    while (index >= 0 && index < static_cast<int>(_menus.size())) {
+        _openIdx = index;
+        _hoverIdx = index;
+        _nextOpenIdx = -1;
+        GetCursorPos(&_lastHookPt);
+        redraw();
+
+        float scale = dpiScaleFor(_hwnd);
+        POINT pt = { static_cast<LONG>(_rects[index].left * scale), static_cast<LONG>(BarHeight * scale) };
+        ClientToScreen(_hwnd, &pt);
+        TrackPopupMenu(_menus[index].second, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, _owner, nullptr);
+        index = _nextOpenIdx;
+    }
+
+    if (g_menuHook) { UnhookWindowsHookEx(g_menuHook); g_menuHook = nullptr; }
+    g_activeMenuBar = nullptr;
     _openIdx = -1;
+    _nextOpenIdx = -1;
+    POINT pt{};
+    GetCursorPos(&pt);
+    _hoverIdx = hitTestMenu(pt);
     redraw();
 }
 

@@ -7,6 +7,7 @@
 #include "core/Settings.h"
 #include "ui/D2DControls.h"
 #include "ui/Dialogs.h"
+#include "ui/FileBrowserPanel.h"
 #include "win/MediaControls.h"
 #include "win/WinInterop.h"
 #include <windows.h>
@@ -104,6 +105,7 @@ private:
     void hideFullscreenBar(bool immediate = false);
     void tickFsBarFade();
     void ensureAnimTimer();
+    void setFileBrowser(bool on);
     void setMinimal(bool on);
     void applyTheme();
     void updateWindowTitle();
@@ -145,6 +147,7 @@ private:
     HMENU _dynSubTrack = nullptr;
 
     std::unique_ptr<D2DMenuBar> _menuBar;
+    std::unique_ptr<FileBrowserPanel> _fileBrowser;
     std::unique_ptr<D2DControlBar> _dockedBar;
     std::unique_ptr<D2DControlBar> _fullscreenBar;
     std::unique_ptr<D2DOverlay> _overlay;
@@ -162,6 +165,7 @@ private:
     bool _isFullscreen = false;
     bool _isMiniPlayer = false;
     bool _isMinimal = false;
+    bool _showFileBrowser = false;
     bool _fsBarVisible = false;
     bool _animTimerActive = false;
     float _fsBarAlpha = 0.0f;

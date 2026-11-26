@@ -82,11 +82,13 @@ public:
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    static LRESULT CALLBACK menuHookProc(int code, WPARAM wp, LPARAM lp);
     LRESULT handleMsg(UINT msg, WPARAM wp, LPARAM lp);
     void ensureTarget();
     void computeLayout();
     void paint();
     void openMenuAt(int index);
+    int hitTestMenu(POINT screenPt) const;
 
     D2DContext& _ctx;
     HWND _hwnd = nullptr;
@@ -96,6 +98,8 @@ private:
     bool _dark = true;
     int _hoverIdx = -1;
     int _openIdx = -1;
+    int _nextOpenIdx = -1;
+    POINT _lastHookPt{ -1, -1 };
     bool _mouseInside = false;
     std::vector<std::pair<std::wstring, HMENU>> _menus;
     std::vector<D2D1_RECT_F> _rects;
