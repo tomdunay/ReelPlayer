@@ -63,7 +63,7 @@
             <TabItem Header="Network">
                 <StackPanel Margin="4,10,4,4">
                     <TextBlock Text="Please enter a network URL:" FontWeight="SemiBold" Margin="0,0,0,6" />
-                    <ComboBox x:Name="UrlBox" IsEditable="True" />
+                    <TextBox x:Name="UrlBox" />
                     <TextBlock Margin="0,12,0,0" Opacity="0.75" TextWrapping="Wrap" LineHeight="20">
                         Examples:<LineBreak />
                         https://www.example.com/stream.m3u8<LineBreak />

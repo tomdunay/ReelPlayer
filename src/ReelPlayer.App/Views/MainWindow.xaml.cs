@@ -212,7 +212,6 @@ public partial class MainWindow : Window
         int.TryParse(value, out var n);
         switch (parts[1])
         {
-            case "Recent": _vm.OpenLocations(new[] { value }); break;
             case "Title": _vm.SelectTitle(n); break;
             case "Chapter": _vm.SelectChapter(n); break;
             case "Speed": _vm.SetRate(MainViewModel.Rates[n]); break;
@@ -297,17 +296,6 @@ public partial class MainWindow : Window
         var active = _vm.Engine.IsActive;
         switch (kind)
         {
-            case "Recent":
-                foreach (var r in _vm.Settings.Recent)
-                    menu.Items.Add(new MenuItem { Header = EscapeAccessKey(r), Tag = $"set:Recent:{r}" });
-                if (_vm.Settings.Recent.Count > 0)
-                {
-                    menu.Items.Add(new Separator());
-                    var clear = new MenuItem { Header = "Clear" };
-                    clear.Click += (_, ev) => { _vm.Settings.Recent.Clear(); ev.Handled = true; };
-                    menu.Items.Add(clear);
-                }
-                break;
             case "Title": if (active) AddTracks(_vm.Titles()); break;
             case "Chapter": if (active) AddTracks(_vm.Chapters()); break;
             case "Speed":

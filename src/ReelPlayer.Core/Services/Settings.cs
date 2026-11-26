@@ -48,15 +48,12 @@ public sealed class AppSettings
     public bool WindowMaximized { get; set; }
     public double PlaylistWidth { get; set; } = 320;
     public string? LastFolder { get; set; }
-    public List<string> Recent { get; set; } = new();
     public List<string> LastPlaylist { get; set; } = new();
     public int LastPlaylistIndex { get; set; } = -1;
 }
 
 public sealed class SettingsService
 {
-    public const int MaxRecent = 10;
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -98,14 +95,6 @@ public sealed class SettingsService
         var tmp = FilePath + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(Current, JsonOptions));
         File.Move(tmp, FilePath, overwrite: true);
-    }
-
-    public void AddRecent(string location)
-    {
-        var recent = Current.Recent;
-        recent.RemoveAll(r => string.Equals(r, location, StringComparison.OrdinalIgnoreCase));
-        recent.Insert(0, location);
-        if (recent.Count > MaxRecent) recent.RemoveRange(MaxRecent, recent.Count - MaxRecent);
     }
 
     public static int SubtitleSizeToVlc(string size) => size switch

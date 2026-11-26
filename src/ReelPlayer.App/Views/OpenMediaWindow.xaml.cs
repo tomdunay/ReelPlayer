@@ -23,8 +23,6 @@ public partial class OpenMediaWindow : Window
             DriveBox.Items.Add(d.Name);
         if (DriveBox.Items.Count > 0) DriveBox.SelectedIndex = 0;
 
-        foreach (var url in settings.Recent.Where(r => r.Contains("://", StringComparison.Ordinal)))
-            UrlBox.Items.Add(url);
         if (Clipboard.ContainsText() && Clipboard.GetText().Trim() is var clip && clip.Contains("://") && !clip.Contains('\n'))
             UrlBox.Text = clip;
 

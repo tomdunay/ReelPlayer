@@ -265,7 +265,7 @@ public class ResumeStoreTests
 public class SettingsTests
 {
     [Fact]
-    public void Round_trip_and_recent_list()
+    public void Round_trip()
     {
         var dir = Directory.CreateTempSubdirectory();
         try
@@ -275,8 +275,6 @@ public class SettingsTests
             svc.Current.Volume = 135;
             svc.Current.Loop = LoopMode.One;
             svc.Current.Hotkeys["Mute"] = "Ctrl+M";
-            for (var i = 0; i < 15; i++) svc.AddRecent($@"C:\{i}.mp4");
-            svc.AddRecent(@"C:\3.MP4");
             svc.Save();
 
             var again = new SettingsService(dir.FullName);
@@ -284,9 +282,6 @@ public class SettingsTests
             Assert.Equal(135, s.Volume);
             Assert.Equal(LoopMode.One, s.Loop);
             Assert.Equal("Ctrl+M", s.Hotkeys["Mute"]);
-            Assert.Equal(SettingsService.MaxRecent, s.Recent.Count);
-            Assert.Equal(@"C:\3.MP4", s.Recent[0]);
-            Assert.Single(s.Recent, r => r.Equals(@"C:\3.mp4", StringComparison.OrdinalIgnoreCase));
         }
         finally { dir.Delete(true); }
     }

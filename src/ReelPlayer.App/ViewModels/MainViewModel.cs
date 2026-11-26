@@ -258,7 +258,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PositionMs = startMs;
         LengthMs = item.DurationMs;
         ChapterFractions = Array.Empty<double>();
-        SettingsService.AddRecent(item.Location);
 
         Engine.Open(item, startMs, BuildExtraOptions());
 

@@ -60,8 +60,6 @@
                 <MenuItem Header="Open _Network Stream…" Tag="OpenNetwork" />
                 <MenuItem Header="Open _Capture Device…" Tag="OpenCapture" />
                 <Separator />
-                <MenuItem Header="Open _Recent Media" Tag="dyn:Recent"><MenuItem Header="(empty)" /></MenuItem>
-                <Separator />
                 <MenuItem Header="Sa_ve Playlist to File…" Tag="SavePlaylist" />
                 <Separator />
                 <MenuItem Header="_Quit" Tag="Quit" />
